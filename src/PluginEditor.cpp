@@ -257,6 +257,8 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     setSize(560, 412);
     startTimerHz(30);
     updateState();
+
+    TunnelManager::prefetchAsync();
 }
 
 int ListenLinkEditor::tunnelState() const

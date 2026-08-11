@@ -40,6 +40,12 @@ public:
     juce::String getPublicUrl() const  { const juce::ScopedLock sl(lock); return publicUrl; }
     juce::String getStatus() const     { const juce::ScopedLock sl(lock); return status; }
 
+    static juce::File downloadedBinary()
+    {
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("Application Support/ListenLink/cloudflared");
+    }
+
     static juce::String findCloudflared()
     {
         for (const char* p : { "/opt/homebrew/bin/cloudflared",
@@ -48,17 +54,80 @@ public:
                                "/usr/bin/cloudflared" })
             if (juce::File(p).existsAsFile())
                 return p;
+        if (downloadedBinary().existsAsFile())
+            return downloadedBinary().getFullPathName();
         return {};
+    }
+
+    // One-time download of the official cloudflared build (~17 MB) into
+    // Application Support. Blocking; safe from any thread — concurrent callers
+    // collapse into a single download.
+    static bool ensureCloudflared()
+    {
+        if (findCloudflared().isNotEmpty())
+            return true;
+
+        static std::atomic<bool> busy { false };
+        if (busy.exchange(true))
+        {
+            while (busy.load())
+                juce::Thread::sleep(200);
+            return findCloudflared().isNotEmpty();
+        }
+
+        const auto dir = downloadedBinary().getParentDirectory();
+        dir.createDirectory();
+        const auto tgz = dir.getChildFile("cloudflared.tgz");
+
+       #if defined(__aarch64__)
+        const char* url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz";
+       #else
+        const char* url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz";
+       #endif
+
+        bool ok = false;
+        juce::ChildProcess curl;
+        if (curl.start(juce::StringArray { "/usr/bin/curl", "-fsSL", "--connect-timeout", "15",
+                                           "-o", tgz.getFullPathName(), url })
+            && curl.waitForProcessToFinish(180000) && curl.getExitCode() == 0)
+        {
+            juce::ChildProcess tar;
+            ok = tar.start(juce::StringArray { "/usr/bin/tar", "-xzf", tgz.getFullPathName(),
+                                               "-C", dir.getFullPathName() })
+                 && tar.waitForProcessToFinish(30000) && tar.getExitCode() == 0
+                 && downloadedBinary().existsAsFile()
+                 && downloadedBinary().setExecutePermission(true);
+        }
+        tgz.deleteFile();
+        busy.store(false);
+        return ok;
+    }
+
+    // Kick off the download in the background if no binary is present yet, so
+    // it's usually ready before the user ever clicks "Create public link".
+    static void prefetchAsync()
+    {
+        if (findCloudflared().isEmpty())
+            juce::Thread::launch([] { ensureCloudflared(); });
     }
 
 private:
     void run() override
     {
+        if (findCloudflared().isEmpty())
+        {
+            {
+                const juce::ScopedLock sl(lock);
+                status = "One-time setup: downloading tunnel engine (~17 MB)...";
+            }
+            ensureCloudflared();
+        }
+
         const auto exe = findCloudflared();
         if (exe.isEmpty())
         {
             const juce::ScopedLock sl(lock);
-            status = "cloudflared not found - run: brew install cloudflared";
+            status = "Couldn't download the tunnel engine - check your internet connection";
             return;
         }
 

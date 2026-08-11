@@ -13,7 +13,9 @@ anyone can open in a browser.
   buffer, so total latency is typically well under half a second plus network).
 - "Create public link" shells out to `cloudflared` (a free Cloudflare quick
   tunnel) and scrapes the `https://….trycloudflare.com` URL — that's the link
-  you send to your client. No account needed.
+  you send to your client. No account needed. If `cloudflared` isn't installed,
+  the plugin downloads the official build automatically on first use (~17 MB,
+  one time, into `~/Library/Application Support/ListenLink/`).
 
 A **Stream Quality** selector in the plugin picks the format (saved with your
 Ableton project):
@@ -54,9 +56,8 @@ Notes:
 
 ## Building
 
-Requires Xcode command-line tools, CMake ≥ 3.22, and internet (JUCE is
-fetched automatically). `cloudflared` is optional but needed for public links
-(`brew install cloudflared`).
+Requires Xcode command-line tools, CMake ≥ 3.22, and internet (JUCE and Opus
+are fetched automatically).
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release

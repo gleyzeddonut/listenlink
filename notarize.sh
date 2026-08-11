@@ -42,7 +42,8 @@ ListenLink — install
 2. Copy ListenLink.vst3      to ~/Library/Audio/Plug-Ins/VST3/
 3. Restart your DAW (or rescan plugins) and add ListenLink to the master bus.
 
-Optional, for public links: install cloudflared (free):  brew install cloudflared
+Public links work out of the box — the plugin fetches Cloudflare's free tunnel
+tool automatically the first time it's needed (~17 MB, one time).
 EOF
 rm -f dist/_au.zip
 ditto -c -k "$TMP" dist/ListenLink-mac.zip
