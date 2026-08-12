@@ -201,27 +201,13 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     };
     addAndMakeVisible(qualityButton);
 
-    auto setupUrlLabel = [this](juce::Label& l, juce::Colour colour)
-    {
-        l.setFont(ll::mono(13.0f));
-        l.setColour(juce::Label::textColourId, colour);
-        l.setJustificationType(juce::Justification::centredLeft);
-        l.setBorderSize({ 0, 0, 0, 0 });
-        l.setMinimumHorizontalScale(1.0f);
-        l.setInterceptsMouseClicks(false, false);
-        addAndMakeVisible(l);
-    };
-    setupUrlLabel(localUrlLabel, ll::text);
-    setupUrlLabel(publicUrlLabel, ll::green);
-
-    copyLocalButton.onClick = [this]
-    {
-        juce::SystemClipboard::copyTextToClipboard(getLocalUrl());
-        copiedLocal = 45;
-        copyLocalButton.setButtonText("Copied");
-        copyLocalButton.setTextColourOverride(ll::green);
-    };
-    addAndMakeVisible(copyLocalButton);
+    publicUrlLabel.setFont(ll::mono(13.0f));
+    publicUrlLabel.setColour(juce::Label::textColourId, ll::green);
+    publicUrlLabel.setJustificationType(juce::Justification::centredLeft);
+    publicUrlLabel.setBorderSize({ 0, 0, 0, 0 });
+    publicUrlLabel.setMinimumHorizontalScale(1.0f);
+    publicUrlLabel.setInterceptsMouseClicks(false, false);
+    addChildComponent(publicUrlLabel);
 
     copyPublicButton.onClick = [this]
     {
@@ -254,7 +240,7 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     };
     addChildComponent(popup);
 
-    setSize(560, 412);
+    setSize(560, 314);
     startTimerHz(30);
     updateState();
 
@@ -266,20 +252,6 @@ int ListenLinkEditor::tunnelState() const
     if (! processor.tunnel.isTunnelActive())
         return 0;
     return processor.tunnel.getPublicUrl().isEmpty() ? 1 : 2;
-}
-
-juce::String ListenLinkEditor::getLocalUrl() const
-{
-    juce::String host = "localhost";
-    for (const auto& addr : juce::IPAddress::getAllAddresses())
-    {
-        if (! addr.isIPv6 && addr != juce::IPAddress::local())
-        {
-            host = addr.toString();
-            break;
-        }
-    }
-    return "http://" + host + ":" + juce::String(processor.server.getPort());
 }
 
 void ListenLinkEditor::timerCallback()
@@ -302,13 +274,8 @@ void ListenLinkEditor::timerCallback()
 
     repaint(330, 16, 210, 34);                 // LIVE pill pulse
     if (tunnelState() == 1)
-        repaint(20, 296, 520, 60);             // spinner
+        repaint(20, 196, 520, 60);             // spinner
 
-    if (copiedLocal > 0 && --copiedLocal == 0)
-    {
-        copyLocalButton.setButtonText("Copy");
-        copyLocalButton.clearTextColourOverride();
-    }
     if (copiedPublic > 0 && --copiedPublic == 0)
     {
         copyPublicButton.setButtonText("Copy");
@@ -321,7 +288,6 @@ void ListenLinkEditor::timerCallback()
 
 void ListenLinkEditor::updateState()
 {
-    localUrlLabel.setText(getLocalUrl(), juce::dontSendNotification);
     publicUrlLabel.setText(processor.tunnel.getPublicUrl(), juce::dontSendNotification);
 
     qualityButton.setButtonText(kQualityNames[processor.qualityParam->getIndex()]);
@@ -341,15 +307,12 @@ void ListenLinkEditor::resized()
 {
     meter.setBounds(34, 118, 492, 44);
 
-    localUrlLabel.setBounds(44, 220, 388, 34);
-    copyLocalButton.setBounds(452, 220, 74, 34);
-
-    publicUrlLabel.setBounds(44, 318, 320, 34);
-    copyPublicButton.setBounds(384, 318, 74, 34);
-    stopButton.setBounds(468, 318, 58, 34);
+    publicUrlLabel.setBounds(44, 220, 320, 34);
+    copyPublicButton.setBounds(384, 220, 74, 34);
+    stopButton.setBounds(468, 220, 58, 34);
 
     const int cw = (int) ll::textWidth(ll::sans(12.0f, true), createButton.getButtonText()) + 32;
-    createButton.setBounds(526 - cw, 319, cw, 32);
+    createButton.setBounds(526 - cw, 221, cw, 32);
 
     popup.setBounds(getLocalBounds());
 }
@@ -416,21 +379,13 @@ void ListenLinkEditor::paint(juce::Graphics& g)
     // --- cards ----------------------------------------------------------
     g.setColour(ll::card);
     g.fillRoundedRectangle(20.0f, 68.0f, 520.0f, 102.0f, 10.0f);    // meters
-    g.fillRoundedRectangle(20.0f, 184.0f, 520.0f, 84.0f, 10.0f);    // network
-    g.fillRoundedRectangle(20.0f, 282.0f, 520.0f, 84.0f, 10.0f);    // public
+    g.fillRoundedRectangle(20.0f, 184.0f, 520.0f, 84.0f, 10.0f);    // public
 
     const auto sectionFont = ll::sans(10.0f, true).withExtraKerningFactor(0.1f);
     g.setColour(ll::dim);
     g.setFont(sectionFont);
     g.drawText("STREAM QUALITY", 34, 89, 200, 12, juce::Justification::centredLeft);
-    g.drawText("ON YOUR NETWORK", 34, 198, 200, 12, juce::Justification::centredLeft);
-    g.drawText("PUBLIC LINK", 34, 296, 200, 12, juce::Justification::centredLeft);
-
-    // network URL field
-    g.setColour(ll::bg);
-    g.fillRoundedRectangle(34.0f, 220.0f, 408.0f, 34.0f, 7.0f);
-    g.setColour(ll::border2);
-    g.drawRoundedRectangle(34.5f, 220.5f, 407.0f, 33.0f, 7.0f, 1.0f);
+    g.drawText("PUBLIC LINK", 34, 198, 200, 12, juce::Justification::centredLeft);
 
     // --- public link card states ---------------------------------------
     const int state = tunnelState();
@@ -439,17 +394,17 @@ void ListenLinkEditor::paint(juce::Graphics& g)
     {
         g.setColour(ll::green);
         g.setFont(ll::sans(10.0f));
-        g.fillEllipse(455.0f, 299.5f, 5.0f, 5.0f);
-        g.drawText("tunnel up", 464, 296, 62, 12, juce::Justification::centredLeft);
+        g.fillEllipse(455.0f, 201.5f, 5.0f, 5.0f);
+        g.drawText("tunnel up", 464, 198, 62, 12, juce::Justification::centredLeft);
 
         g.setColour(ll::bg);
-        g.fillRoundedRectangle(34.0f, 318.0f, 340.0f, 34.0f, 7.0f);
+        g.fillRoundedRectangle(34.0f, 220.0f, 340.0f, 34.0f, 7.0f);
         g.setColour(ll::green.withAlpha(0.3f));
-        g.drawRoundedRectangle(34.5f, 318.5f, 339.0f, 33.0f, 7.0f, 1.0f);
+        g.drawRoundedRectangle(34.5f, 220.5f, 339.0f, 33.0f, 7.0f, 1.0f);
     }
     else if (state == 1)
     {
-        const juce::Rectangle<float> spin(34.0f, 328.0f, 14.0f, 14.0f);
+        const juce::Rectangle<float> spin(34.0f, 230.0f, 14.0f, 14.0f);
         g.setColour(ll::buttonBg);
         g.drawEllipse(spin, 2.0f);
         juce::Path head;
@@ -464,7 +419,7 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         g.setFont(ll::sans(12.0f));
         const auto status = processor.tunnel.getStatus();
         g.drawText(status.isNotEmpty() ? status : juce::String("Starting cloudflared tunnel..."),
-                   56, 318, 400, 34, juce::Justification::centredLeft);
+                   56, 220, 400, 34, juce::Justification::centredLeft);
     }
     else
     {
@@ -472,7 +427,7 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         g.setColour(status.isNotEmpty() ? ll::red : ll::dim);
         g.setFont(ll::sans(12.0f));
         g.drawText(status.isNotEmpty() ? status : juce::String("Generate a public link."),
-                   34, 318, 350, 34, juce::Justification::centredLeft);
+                   34, 220, 350, 34, juce::Justification::centredLeft);
     }
 
     // --- footer ---------------------------------------------------------
@@ -486,7 +441,7 @@ void ListenLinkEditor::paint(juce::Graphics& g)
                                           + mid + "48 kHz";
     g.setColour(ll::faint);
     g.setFont(ll::mono(10.0f));
-    g.drawText(fmt, 22, 380, 300, 12, juce::Justification::centredLeft);
+    g.drawText(fmt, 22, 282, 300, 12, juce::Justification::centredLeft);
     g.drawText(juce::String(kQualityHints[q]) + " per listener",
-               238, 380, 300, 12, juce::Justification::centredRight);
+               238, 282, 300, 12, juce::Justification::centredRight);
 }

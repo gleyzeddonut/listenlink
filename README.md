@@ -36,12 +36,12 @@ switch quality mid-stream; listeners re-sync in under a second.
 
 1. In Ableton: add **ListenLink** (Audio Units or VST3 → DIY) to the master bus.
 2. Open the plugin UI:
-   - Stereo level meters show the signal passing through, and the status line
+   - Stereo level meters show the signal passing through, and the LIVE pill
      shows how many people are connected.
-   - **Share on your network** — a `http://<your-lan-ip>:17654` link for
-     anyone on the same Wi-Fi.
    - **Create public link** — after a few seconds a
      `https://xxx.trycloudflare.com` link appears. Copy and send it.
+   - (The server also listens on `http://<your-lan-ip>:17654` if you ever want
+     someone on the same network to connect directly.)
 3. The listener opens the link and presses **Listen**. The page shows its own
    level meters plus a "N listening" count when more than one person is on.
 

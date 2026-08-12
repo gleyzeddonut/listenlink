@@ -119,21 +119,19 @@ private:
     void timerCallback() override;
     void updateState();               // 2 Hz: text, visibility, layout of variable-width bits
     int tunnelState() const;          // 0 idle, 1 starting, 2 up
-    juce::String getLocalUrl() const;
 
     ListenLinkProcessor& processor;
 
     MeterPanel meter;
     QualityButton qualityButton;
-    StyledButton copyLocalButton  { "Copy", StyledButton::Style::normal };
     StyledButton copyPublicButton { "Copy", StyledButton::Style::normal };
     StyledButton createButton     { "Create public link", StyledButton::Style::accentBtn };
     StyledButton stopButton       { "Stop", StyledButton::Style::danger };
-    juce::Label localUrlLabel, publicUrlLabel;
+    juce::Label publicUrlLabel;
     QualityPopup popup;
 
     float dispL = 0, dispR = 0, holdL = 0, holdR = 0;
-    int tick = 0, copiedLocal = 0, copiedPublic = 0;
+    int tick = 0, copiedPublic = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ListenLinkEditor)
 };
