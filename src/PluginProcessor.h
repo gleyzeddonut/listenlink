@@ -229,8 +229,10 @@ public:
         return latest();
     }
 
-    static constexpr const char* releasePageUrl =
-        "https://github.com/gleyzeddonut/listenlink/releases/latest";
+    // Where the update button sends users. The version check itself still uses
+    // the GitHub API (needs a machine-readable tag), but the click lands on the
+    // store page — keep the latest installer available there.
+    static constexpr const char* releasePageUrl = "https://gggaudio.store/listenlink/";
 
 private:
     static juce::CriticalSection& lock()  { static juce::CriticalSection l; return l; }
