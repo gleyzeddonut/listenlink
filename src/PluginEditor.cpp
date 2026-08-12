@@ -240,6 +240,11 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     };
     addChildComponent(popup);
 
+    updateButton.onClick = []
+    { juce::URL(UpdateChecker::releasePageUrl).launchInDefaultBrowser(); };
+    addChildComponent(updateButton);
+    UpdateChecker::checkAsync();
+
     setSize(560, 314);
     startTimerHz(30);
     updateState();
@@ -252,6 +257,17 @@ int ListenLinkEditor::tunnelState() const
     if (! processor.tunnel.isTunnelActive())
         return 0;
     return processor.tunnel.getPublicUrl().isEmpty() ? 1 : 2;
+}
+
+int ListenLinkEditor::pillWidth() const
+{
+    const bool serving = processor.server.isServerRunning();
+    const int n = processor.server.getNumListeners();
+    const juce::String word = serving ? "LIVE" : "OFF";
+    const juce::String count = juce::String::fromUTF8("\xc2\xb7 ") + juce::String(n)
+                               + (n == 1 ? " listener" : " listeners");
+    return (int) (12 + 7 + 7 + ll::textWidth(ll::sans(12.0f, true), word)
+                  + 6 + ll::textWidth(ll::sans(12.0f), count) + 12);
 }
 
 void ListenLinkEditor::timerCallback()
@@ -299,6 +315,15 @@ void ListenLinkEditor::updateState()
     publicUrlLabel.setVisible(state == 2);
     copyPublicButton.setVisible(state == 2);
     stopButton.setVisible(state == 2);
+
+    const auto updateTag = UpdateChecker::getAvailableUpdate();
+    if (updateTag.isNotEmpty())
+    {
+        updateButton.setButtonText("Update to " + updateTag);
+        const int w = (int) ll::textWidth(ll::sans(12.0f, true), updateButton.getButtonText()) + 24;
+        updateButton.setBounds(540 - pillWidth() - 10 - w, 25, w, 24);
+        updateButton.setVisible(true);
+    }
 
     repaint();
 }

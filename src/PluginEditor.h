@@ -119,6 +119,7 @@ private:
     void timerCallback() override;
     void updateState();               // 2 Hz: text, visibility, layout of variable-width bits
     int tunnelState() const;          // 0 idle, 1 starting, 2 up
+    int pillWidth() const;            // current width of the LIVE pill
 
     ListenLinkProcessor& processor;
 
@@ -127,6 +128,7 @@ private:
     StyledButton copyPublicButton { "Copy", StyledButton::Style::normal };
     StyledButton createButton     { "Create public link", StyledButton::Style::accentBtn };
     StyledButton stopButton       { "Stop", StyledButton::Style::danger };
+    StyledButton updateButton     { "Update", StyledButton::Style::accentBtn };
     juce::Label publicUrlLabel;
     QualityPopup popup;
 

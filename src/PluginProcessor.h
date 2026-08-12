@@ -189,6 +189,68 @@ private:
 
 // ---------------------------------------------------------------------------
 
+// Checks GitHub once per process for a newer release tag.
+class UpdateChecker
+{
+public:
+    static void checkAsync()
+    {
+        static std::atomic<bool> started { false };
+        if (started.exchange(true))
+            return;
+
+        juce::Thread::launch([]
+        {
+            juce::ChildProcess curl;
+            if (! curl.start(juce::StringArray {
+                    "/usr/bin/curl", "-fsSL", "--connect-timeout", "10", "-m", "20",
+                    "https://api.github.com/repos/gleyzeddonut/listenlink/releases/latest" }))
+                return;
+
+            const auto tag = curl.readAllProcessOutput()
+                                 .fromFirstOccurrenceOf("\"tag_name\"", false, false)
+                                 .fromFirstOccurrenceOf(":", false, false)
+                                 .fromFirstOccurrenceOf("\"", false, false)
+                                 .upToFirstOccurrenceOf("\"", false, false)
+                                 .trim();
+
+            if (tag.startsWithChar('v') && isNewer(tag.substring(1), JucePlugin_VersionString))
+            {
+                const juce::ScopedLock sl(lock());
+                latest() = tag;
+            }
+        });
+    }
+
+    // Newer release tag (e.g. "v0.3.0"), or empty if up to date / not checked yet.
+    static juce::String getAvailableUpdate()
+    {
+        const juce::ScopedLock sl(lock());
+        return latest();
+    }
+
+    static constexpr const char* releasePageUrl =
+        "https://github.com/gleyzeddonut/listenlink/releases/latest";
+
+private:
+    static juce::CriticalSection& lock()  { static juce::CriticalSection l; return l; }
+    static juce::String& latest()         { static juce::String s; return s; }
+
+    static bool isNewer(const juce::String& remote, const juce::String& local)
+    {
+        const auto ra = juce::StringArray::fromTokens(remote, ".", "");
+        const auto la = juce::StringArray::fromTokens(local, ".", "");
+        for (int i = 0; i < juce::jmax(ra.size(), la.size()); ++i)
+        {
+            const int r = i < ra.size() ? ra[i].getIntValue() : 0;
+            const int l = i < la.size() ? la[i].getIntValue() : 0;
+            if (r != l)
+                return r > l;
+        }
+        return false;
+    }
+};
+
 class ListenLinkProcessor : public juce::AudioProcessor
 {
 public:
