@@ -23,6 +23,10 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
            width:100%; cursor:pointer; }
   button:hover { background:#657eff; }
   button.live { background:#2a2a33; color:#ff5d5d; }
+  button.mute { margin-top:10px; font-size:14px; font-weight:500; padding:10px 0;
+                background:#26262f; color:#b8b8c2; }
+  button.mute:hover { background:#30303b; }
+  button.mute.muted { color:#ffd24a; }
   #status { margin-top:18px; font-size:14px; color:#b8b8c2; min-height:20px; }
   #meta { margin-top:6px; font-size:12px; color:#6a6a76; min-height:16px;
           font-variant-numeric: tabular-nums; }
@@ -42,6 +46,7 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
   <h1>ListenLink</h1>
   <div class="sub">Live from the master bus</div>
   <button id="btn">&#9654;&nbsp; Listen</button>
+  <button id="muteBtn" class="mute" hidden>&#128263;&nbsp; Mute</button>
   <div id="status">Press listen to start</div>
   <div id="meta"></div>
   <div id="meters">
@@ -52,14 +57,15 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <script>
 "use strict";
 const btn = document.getElementById('btn');
+const muteBtn = document.getElementById('muteBtn');
 const statusEl = document.getElementById('status');
 const metaEl = document.getElementById('meta');
 const metersEl = document.getElementById('meters');
 const covL = document.getElementById('covL');
 const covR = document.getElementById('covR');
 
-let ctx = null, node = null, ws = null;
-let running = false, live = false;
+let ctx = null, node = null, gain = null, ws = null;
+let running = false, live = false, muted = false;
 let streamRate = 48000;
 let codec = 'pcm', opusBitrate = 0, decoder = null, opusTime = 0, forcePcm = false;
 let listeners = 0;
@@ -83,7 +89,8 @@ function renderStatus() {
   const q = codec === 'opus' ? 'Opus ' + Math.round(opusBitrate / 1000) + ' kbps'
                              : (streamRate / 1000) + ' kHz lossless';
   setStatus('<span class="dot"></span>Live &mdash; ' + q
-    + (listeners > 1 ? ' &middot; ' + listeners + ' listening' : ''));
+    + (listeners > 1 ? ' &middot; ' + listeners + ' listening' : '')
+    + (muted ? ' &middot; muted' : ''));
 }
 
 function fallbackToPcm() {
@@ -208,7 +215,10 @@ async function initAudio() {
   node.port.onmessage = (e) => {
     updateMeta(Math.round(e.data.buffered / ctx.sampleRate * 1000), e.data.underruns);
   };
-  node.connect(ctx.destination);
+  gain = ctx.createGain();
+  gain.gain.value = muted ? 0 : 1;
+  node.connect(gain);
+  gain.connect(ctx.destination);
   await ctx.resume();
 }
 
@@ -281,10 +291,19 @@ function connect() {
   ws.onerror = () => { try { ws.close(); } catch(_){} };
 }
 
+function setMuted(m) {
+  muted = m;
+  muteBtn.classList.toggle('muted', m);
+  muteBtn.innerHTML = m ? '&#128266;&nbsp; Unmute' : '&#128263;&nbsp; Mute';
+  if (gain) gain.gain.setTargetAtTime(m ? 0 : 1, ctx.currentTime, 0.015);
+  renderStatus();
+}
+
 function start() {
   running = true;
   btn.classList.add('live');
   btn.innerHTML = '&#9632;&nbsp; Stop';
+  muteBtn.hidden = false;
   bytesIn = 0; lastRateT = 0; lastRateBytes = 0;
   delete metaEl.dataset.kbps;
   connect();
@@ -294,9 +313,11 @@ function stop() {
   running = false; live = false;
   btn.classList.remove('live');
   btn.innerHTML = '&#9654;&nbsp; Listen';
+  muteBtn.hidden = true;
+  setMuted(false);
   if (ws) { ws.onclose = null; try { ws.close(); } catch(_){} ws = null; }
   if (decoder) { try { decoder.close(); } catch(_){} decoder = null; }
-  if (ctx) { try { ctx.close(); } catch(_){} ctx = null; node = null; }
+  if (ctx) { try { ctx.close(); } catch(_){} ctx = null; node = null; gain = null; }
   setStatus('Stopped');
   metaEl.textContent = '';
   metersEl.style.display = 'none';
@@ -305,6 +326,7 @@ function stop() {
 }
 
 btn.addEventListener('click', () => { running ? stop() : start(); });
+muteBtn.addEventListener('click', () => setMuted(!muted));
 </script>
 </body>
 </html>

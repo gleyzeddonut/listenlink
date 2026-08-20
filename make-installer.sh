@@ -60,5 +60,11 @@ echo "==> Verifying..."
 spctl -a -t install -v "dist/ListenLink-$VER.pkg"
 pkgutil --check-signature "dist/ListenLink-$VER.pkg" | head -3
 
+# Stable-named copy: uploaded to each release so
+# releases/latest/download/ListenLink.pkg always serves the newest installer
+# (the site's download button and the in-plugin update fallback rely on it).
+cp "dist/ListenLink-$VER.pkg" dist/ListenLink.pkg
+
 echo
-echo "Done. Installer: dist/ListenLink-$VER.pkg"
+echo "Done. Installer: dist/ListenLink-$VER.pkg (+ stable copy dist/ListenLink.pkg)"
+echo "Release: gh release create v$VER dist/ListenLink-$VER.pkg dist/ListenLink-$VER-mac.zip dist/ListenLink.pkg"
