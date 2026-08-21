@@ -7,7 +7,18 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ListenLink &mdash; live stream</title>
+<title>ListenLink</title>
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ListenLink">
+<meta property="og:title" content="ListenLink">
+<meta property="og:description" content="Live from the master bus &mdash; press play.">
+<meta property="og:image" content="https://gggaudio.store/img/listenlink-icon@2x.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="ListenLink">
+<meta name="twitter:description" content="Live from the master bus &mdash; press play.">
+<meta name="twitter:image" content="https://gggaudio.store/img/listenlink-icon@2x.png">
+<link rel="icon" href="https://gggaudio.store/img/listenlink-icon.png">
+<link rel="apple-touch-icon" href="https://gggaudio.store/img/listenlink-icon@2x.png">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; }
