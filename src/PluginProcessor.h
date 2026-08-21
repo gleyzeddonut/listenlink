@@ -131,47 +131,68 @@ private:
             return;
         }
 
-        juce::StringArray args { exe, "tunnel", "--url", "http://127.0.0.1:" + juce::String(port) };
-        if (! proc.start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        // Self-healing: if cloudflared dies mid-session, relaunch it (fresh
+        // quick tunnels get a new URL) with capped backoff instead of leaving
+        // a dead link on screen.
+        for (int attempt = 0; shouldRun.load() && ! threadShouldExit(); ++attempt)
         {
-            const juce::ScopedLock sl(lock);
-            status = "Failed to launch cloudflared";
-            return;
-        }
-
-        juce::String collected;
-        char buf[2048];
-
-        while (! threadShouldExit() && proc.isRunning())
-        {
-            const int n = proc.readProcessOutput(buf, (int) sizeof(buf));
-            if (n > 0)
+            if (attempt > 0)
             {
-                collected += juce::String::fromUTF8(buf, n);
-                if (getPublicUrl().isEmpty())
                 {
-                    const int end = collected.indexOf(".trycloudflare.com");
-                    if (end >= 0)
+                    const juce::ScopedLock sl(lock);
+                    publicUrl.clear();
+                    status = "Tunnel dropped - reconnecting...";
+                }
+                const int backoffMs = juce::jmin(2000 * (1 << juce::jmin(attempt - 1, 4)), 30000);
+                for (int waited = 0; waited < backoffMs && ! threadShouldExit(); waited += 100)
+                    juce::Thread::sleep(100);
+                if (threadShouldExit())
+                    break;
+            }
+
+            juce::StringArray args { exe, "tunnel", "--url", "http://127.0.0.1:" + juce::String(port) };
+            if (! proc.start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+            {
+                const juce::ScopedLock sl(lock);
+                status = "Failed to launch cloudflared";
+                return;
+            }
+
+            juce::String collected;
+            char buf[2048];
+
+            while (! threadShouldExit() && proc.isRunning())
+            {
+                const int n = proc.readProcessOutput(buf, (int) sizeof(buf));
+                if (n > 0)
+                {
+                    collected += juce::String::fromUTF8(buf, n);
+                    if (getPublicUrl().isEmpty())
                     {
-                        const int start = collected.substring(0, end).lastIndexOf("https://");
-                        if (start >= 0)
+                        const int end = collected.indexOf(".trycloudflare.com");
+                        if (end >= 0)
                         {
-                            const juce::ScopedLock sl(lock);
-                            publicUrl = collected.substring(start, end) + ".trycloudflare.com";
-                            status = "Public link active";
+                            const int start = collected.substring(0, end).lastIndexOf("https://");
+                            if (start >= 0)
+                            {
+                                const juce::ScopedLock sl(lock);
+                                publicUrl = collected.substring(start, end) + ".trycloudflare.com";
+                                status = "Public link active";
+                                attempt = 0;   // healthy again: future drops back off from scratch
+                            }
                         }
+                        if (collected.length() > 65536)
+                            collected = collected.substring(collected.length() - 8192);
                     }
-                    if (collected.length() > 65536)
-                        collected = collected.substring(collected.length() - 8192);
+                }
+                else
+                {
+                    juce::Thread::sleep(100);
                 }
             }
-            else
-            {
-                juce::Thread::sleep(100);
-            }
-        }
 
-        proc.kill();
+            proc.kill();
+        }
 
         if (shouldRun.load() && getPublicUrl().isEmpty())
         {
@@ -207,12 +228,9 @@ public:
                     "https://api.github.com/repos/gleyzeddonut/listenlink/releases/latest" }))
                 return;
 
-            const auto tag = curl.readAllProcessOutput()
-                                 .fromFirstOccurrenceOf("\"tag_name\"", false, false)
-                                 .fromFirstOccurrenceOf(":", false, false)
-                                 .fromFirstOccurrenceOf("\"", false, false)
-                                 .upToFirstOccurrenceOf("\"", false, false)
-                                 .trim();
+            const auto tag = juce::JSON::parse(curl.readAllProcessOutput())
+                                 .getProperty("tag_name", {})
+                                 .toString().trim();
 
             if (tag.startsWithChar('v') && isNewer(tag.substring(1), JucePlugin_VersionString))
             {
