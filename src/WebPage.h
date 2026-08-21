@@ -219,7 +219,7 @@ function renderFoot() {
   if (!live || disconnected) { foot.textContent = 'READY'; return; }
   const q = codec === 'opus' ? 'OPUS ' + Math.round(opusBitrate / 1000)
                              : (streamRate / 1000) + ' KHZ LOSSLESS';
-  foot.textContent = q + ' · ' + lastBufMs + ' MS BUFFER';
+  foot.textContent = q + ' \u00b7 ' + lastBufMs + ' MS BUFFER';
 }
 
 // Debounced connection-quality banner: recent underruns, a starved buffer,

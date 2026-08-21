@@ -182,7 +182,9 @@ void StreamServer::handleConnection(std::unique_ptr<juce::StreamingSocket> sock)
 
     if (path == "/" || path == "/index.html")
     {
-        const juce::String body(kListenerPage);
+        // fromUTF8, not the char* constructor: that one reads bytes as Latin-1
+        // and would double-encode any non-ASCII in the page on the way out.
+        const auto body = juce::String::fromUTF8(kListenerPage);
         const auto response =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/html; charset=utf-8\r\n"
