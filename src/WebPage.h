@@ -92,10 +92,13 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
   .scale span { position:absolute; top:0; }
 
   /* ---- warning banner ---- */
-  .warn[hidden] { display:none; }
+  /* Space is always reserved so showing the banner never shifts the layout;
+     it fades in place instead of inserting a row. */
   .warn { margin-top:20px; display:flex; align-items:flex-start; gap:9px;
           padding:11px 13px; border-radius:11px; background:rgba(255,210,74,.07);
-          border:1px solid rgba(255,210,74,.2); }
+          border:1px solid rgba(255,210,74,.2);
+          visibility:hidden; opacity:0; transition:opacity 200ms ease; }
+  .warn.show { visibility:visible; opacity:1; }
   .warn .wdot { width:6px; height:6px; border-radius:50%; background:#ffd24a;
                 margin-top:6px; flex:none; }
   .warn p { font-size:12.5px; line-height:1.45; color:#e0c880; text-wrap:pretty; }
@@ -135,7 +138,7 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
         <span style="right:0">0</span>
       </div>
     </div>
-    <div class="warn" id="warn" role="status" aria-live="polite" hidden>
+    <div class="warn" id="warn" role="status" aria-live="polite">
       <span class="wdot"></span>
       <p>Your connection is struggling &mdash; audio may drop out while the buffer rebuilds.</p>
     </div>
@@ -230,7 +233,7 @@ function renderWarn() {
        (now - lastUnderrunAt < 8000 && lastUnderrunAt > 0)
     || (live && !disconnected && bufferSeen && lastBufMs < 50)
     || (running && disconnected);
-  warn.hidden = !struggling;
+  warn.classList.toggle('show', struggling);
 }
 
 function fallbackToPcm() {
