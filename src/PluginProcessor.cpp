@@ -11,7 +11,7 @@ ListenLinkProcessor::ListenLinkProcessor()
         juce::StringArray { "Lossless PCM", "Opus 256 kbps", "Opus 128 kbps" }, 0));
 
     interleaved.resize(8192 * 2);
-    const auto identity = StreamIdentity::loadOrCreate();
+    identity = StreamIdentity::generate();   // replaced by the saved one if the host restores state
     tunnel.setIdentity(identity);
     server.setStreamId(identity.id);
     server.startServer();

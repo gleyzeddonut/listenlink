@@ -96,7 +96,18 @@ export default {
                        'Cache-Control': 'no-store' } });
       }
 
-      if (!entry)
+      // Probe the tunnel before redirecting: a crashed DAW never unregisters,
+      // and a dead trycloudflare host would show listeners a raw Cloudflare
+      // error instead of our offline page.
+      let alive = false;
+      if (entry) {
+        try {
+          const probe = await fetch(entry.url + '/', {
+            redirect: 'manual', signal: AbortSignal.timeout(4000) });
+          alive = probe.status >= 200 && probe.status < 400;
+        } catch (_) { alive = false; }
+      }
+      if (!alive)
         return new Response(offlinePage(parts[1]),
           { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8',
                                     'Cache-Control': 'no-store' } });

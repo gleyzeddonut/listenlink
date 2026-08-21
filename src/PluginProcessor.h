@@ -3,36 +3,31 @@
 #include <JuceHeader.h>
 #include "StreamServer.h"
 
-// Per-install stream identity for the link service at gggaudio.store/l/.
-// The id becomes the user's shareable short link; the token proves ownership
-// when re-registering a new tunnel URL. Generated once, kept in App Support.
+// Stream identity for the link service at gggaudio.store/l/. The id becomes
+// the shareable short link; the token proves ownership when re-registering a
+// new tunnel URL. One identity per plugin INSTANCE, persisted in plugin state,
+// so each project keeps its own stable link and two projects streaming at
+// once never fight over one registry entry.
 struct StreamIdentity
 {
     juce::String id, token;
 
-    static StreamIdentity loadOrCreate()
+    bool isValid() const
     {
-        const auto file = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                              .getChildFile("Application Support/ListenLink/identity.json");
-        const auto parsed = juce::JSON::parse(file);
-        StreamIdentity ident { parsed.getProperty("id", {}).toString(),
-                               parsed.getProperty("token", {}).toString() };
-        if (ident.id.length() >= 6 && ident.token.length() >= 16)
-            return ident;
+        return id.length() >= 6 && id.length() <= 32
+            && id.containsOnly("abcdefghijklmnopqrstuvwxyz0123456789")
+            && token.length() >= 16 && token.length() <= 128;
+    }
 
+    static StreamIdentity generate()
+    {
+        StreamIdentity ident;
         auto& rng = juce::Random::getSystemRandom();
         const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-        ident.id.clear();
         for (int i = 0; i < 10; ++i)
             ident.id += alphabet[rng.nextInt(36)];
         ident.token = juce::Uuid().toString().removeCharacters("-")
                     + juce::Uuid().toString().removeCharacters("-");
-
-        auto* obj = new juce::DynamicObject();
-        obj->setProperty("id", ident.id);
-        obj->setProperty("token", ident.token);
-        file.getParentDirectory().createDirectory();
-        file.replaceWithText(juce::JSON::toString(juce::var(obj)));
         return ident;
     }
 };
@@ -379,7 +374,10 @@ public:
 
     void getStateInformation(juce::MemoryBlock& dest) override
     {
-        juce::MemoryOutputStream(dest, true).writeInt(qualityParam->getIndex());
+        juce::MemoryOutputStream out(dest, true);
+        out.writeInt(qualityParam->getIndex());
+        out.writeString(identity.id);
+        out.writeString(identity.token);
     }
 
     void setStateInformation(const void* data, int sizeInBytes) override
@@ -388,6 +386,15 @@ public:
         {
             juce::MemoryInputStream in(data, (size_t) sizeInBytes, false);
             *qualityParam = in.readInt();
+
+            // Older saves end after the int; keep the generated identity then.
+            StreamIdentity saved { in.readString(), in.readString() };
+            if (saved.isValid() && ! tunnel.isTunnelActive())
+            {
+                identity = saved;
+                tunnel.setIdentity(identity);
+                server.setStreamId(identity.id);
+            }
         }
     }
 
@@ -399,6 +406,9 @@ public:
 
     // Block peaks; the editor reads-and-resets these with exchange(0).
     std::atomic<float> peakLeft { 0.0f }, peakRight { 0.0f };
+
+    // This instance's short-link identity (persisted in plugin state).
+    StreamIdentity identity;
 
 private:
     std::vector<float> interleaved;
