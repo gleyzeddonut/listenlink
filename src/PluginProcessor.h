@@ -3,6 +3,40 @@
 #include <JuceHeader.h>
 #include "StreamServer.h"
 
+// Per-install stream identity for the link service at gggaudio.store/l/.
+// The id becomes the user's shareable short link; the token proves ownership
+// when re-registering a new tunnel URL. Generated once, kept in App Support.
+struct StreamIdentity
+{
+    juce::String id, token;
+
+    static StreamIdentity loadOrCreate()
+    {
+        const auto file = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                              .getChildFile("Application Support/ListenLink/identity.json");
+        const auto parsed = juce::JSON::parse(file);
+        StreamIdentity ident { parsed.getProperty("id", {}).toString(),
+                               parsed.getProperty("token", {}).toString() };
+        if (ident.id.length() >= 6 && ident.token.length() >= 16)
+            return ident;
+
+        auto& rng = juce::Random::getSystemRandom();
+        const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+        ident.id.clear();
+        for (int i = 0; i < 10; ++i)
+            ident.id += alphabet[rng.nextInt(36)];
+        ident.token = juce::Uuid().toString().removeCharacters("-")
+                    + juce::Uuid().toString().removeCharacters("-");
+
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("id", ident.id);
+        obj->setProperty("token", ident.token);
+        file.getParentDirectory().createDirectory();
+        file.replaceWithText(juce::JSON::toString(juce::var(obj)));
+        return ident;
+    }
+};
+
 // Runs `cloudflared tunnel --url http://127.0.0.1:<port>` and scrapes the
 // public https://*.trycloudflare.com URL from its output.
 class TunnelManager : private juce::Thread
@@ -10,6 +44,8 @@ class TunnelManager : private juce::Thread
 public:
     TunnelManager() : juce::Thread("ListenLink tunnel") {}
     ~TunnelManager() override { stopTunnel(); }
+
+    void setIdentity(const StreamIdentity& ident) { identity = ident; }
 
     void startTunnel(int localPort)
     {
@@ -30,6 +66,19 @@ public:
         signalThreadShouldExit();
         proc.kill();
         stopThread(3000);
+        if (registered.exchange(false))
+        {
+            const auto id = identity.id, tok = identity.token;
+            juce::Thread::launch([id, tok]
+            {
+                juce::ChildProcess curl;
+                if (curl.start(juce::StringArray { "/usr/bin/curl", "-fsS", "-o", "/dev/null", "-m", "15",
+                        "-X", "POST", juce::String(kLinkService) + "/unregister",
+                        "-H", "Content-Type: application/json",
+                        "-d", "{\"id\":\"" + id + "\",\"token\":\"" + tok + "\"}" }))
+                    curl.waitForProcessToFinish(20000);
+            });
+        }
         const juce::ScopedLock sl(lock);
         publicUrl.clear();
         status = "";
@@ -175,10 +224,21 @@ private:
                             const int start = collected.substring(0, end).lastIndexOf("https://");
                             if (start >= 0)
                             {
-                                const juce::ScopedLock sl(lock);
-                                publicUrl = collected.substring(start, end) + ".trycloudflare.com";
-                                status = "Public link active";
-                                attempt = 0;   // healthy again: future drops back off from scratch
+                                const auto tunnelUrl = collected.substring(start, end) + ".trycloudflare.com";
+                                {
+                                    // Show the raw tunnel link immediately; upgrade to the
+                                    // short link below once the registration succeeds.
+                                    const juce::ScopedLock sl(lock);
+                                    publicUrl = tunnelUrl;
+                                    status = "Public link active";
+                                    attempt = 0;   // healthy again: future drops back off from scratch
+                                }
+                                if (registerLink(tunnelUrl))
+                                {
+                                    registered.store(true);
+                                    const juce::ScopedLock sl(lock);
+                                    publicUrl = juce::String(kLinkService) + "/" + identity.id;
+                                }
                             }
                         }
                         if (collected.length() > 65536)
@@ -201,6 +261,26 @@ private:
         }
     }
 
+    // Register the current tunnel URL with the link service so the user's
+    // stable short link (and reconnecting listener pages) can find it.
+    bool registerLink(const juce::String& tunnelUrl) const
+    {
+        if (identity.id.isEmpty() || identity.token.isEmpty())
+            return false;
+        juce::ChildProcess curl;
+        if (! curl.start(juce::StringArray { "/usr/bin/curl", "-fsS", "-o", "/dev/null", "-m", "15",
+                "-X", "POST", juce::String(kLinkService) + "/register",
+                "-H", "Content-Type: application/json",
+                "-d", "{\"id\":\"" + identity.id + "\",\"token\":\"" + identity.token
+                      + "\",\"url\":\"" + tunnelUrl + "\"}" }))
+            return false;
+        return curl.waitForProcessToFinish(20000) && curl.getExitCode() == 0;
+    }
+
+    static constexpr const char* kLinkService = "https://gggaudio.store/l";
+
+    StreamIdentity identity;
+    std::atomic<bool> registered { false };
     juce::ChildProcess proc;
     std::atomic<bool> shouldRun { false };
     int port = 0;

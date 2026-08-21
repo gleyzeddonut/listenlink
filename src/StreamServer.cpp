@@ -464,13 +464,17 @@ juce::String StreamServer::makeAcceptKey(const juce::String& clientKey)
     return out.toString();
 }
 
-std::vector<uint8_t> StreamServer::buildHelloFrame(double rate, int mode)
+std::vector<uint8_t> StreamServer::buildHelloFrame(double rate, int mode) const
 {
+    const auto id = getStreamId();
+    const auto idField = id.isEmpty() ? juce::String()
+                                      : ",\"streamId\":\"" + id + "\"";
     juce::String json;
     if (mode == 0)
-        json = "{\"codec\":\"pcm\",\"sampleRate\":" + juce::String((int) rate) + ",\"channels\":2}";
+        json = "{\"codec\":\"pcm\",\"sampleRate\":" + juce::String((int) rate)
+               + ",\"channels\":2" + idField + "}";
     else
         json = "{\"codec\":\"opus\",\"sampleRate\":48000,\"channels\":2,\"bitrate\":"
-               + juce::String(mode == 1 ? 256000 : 128000) + "}";
+               + juce::String(mode == 1 ? 256000 : 128000) + idField + "}";
     return buildWsFrame(0x01, json.toRawUTF8(), json.getNumBytesAsUTF8());
 }

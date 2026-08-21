@@ -77,6 +77,8 @@ const covR = document.getElementById('covR');
 
 let ctx = null, node = null, gain = null, ws = null;
 let running = false, live = false, muted = false;
+let wsHost = location.host, wsSecure = location.protocol === 'https:';
+let streamId = null, wsFails = 0;
 let streamRate = 48000;
 let codec = 'pcm', opusBitrate = 0, decoder = null, opusTime = 0, forcePcm = false;
 let listeners = 0;
@@ -233,11 +235,28 @@ async function initAudio() {
   await ctx.resume();
 }
 
+// The stream moved (tunnel restarted): ask the link service where it lives
+// now, then reconnect there. Falls back to plain retries if it can't answer.
+function relocate() {
+  setStatus('Reconnecting&hellip;');
+  fetch('https://gggaudio.store/l/' + streamId + '/resolve', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (j && j.url) {
+        const h = new URL(j.url).host;
+        if (h !== wsHost) { wsHost = h; wsSecure = true; }
+      }
+    })
+    .catch(() => {})
+    .finally(() => { setTimeout(() => { if (running) connect(); }, 1500); });
+}
+
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  const proto = wsSecure ? 'wss://' : 'ws://';
   setStatus('Connecting…');
-  ws = new WebSocket(proto + location.host + '/ws' + (forcePcm ? '?fmt=pcm' : ''));
+  ws = new WebSocket(proto + wsHost + '/ws' + (forcePcm ? '?fmt=pcm' : ''));
   ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { wsFails = 0; };
   ws.onmessage = async (e) => {
     if (typeof e.data === 'string') {
       const msg = JSON.parse(e.data);
@@ -245,6 +264,7 @@ function connect() {
         listeners = msg.listeners;
         renderStatus();
       }
+      if (msg.streamId) streamId = msg.streamId;
       if (msg.sampleRate) {
         const newCodec = msg.codec || 'pcm';
         if (newCodec === 'opus' && typeof AudioDecoder === 'undefined') {
@@ -296,6 +316,8 @@ function connect() {
   ws.onclose = () => {
     if (!running) return;
     live = false;
+    wsFails++;
+    if (wsFails >= 3 && streamId) { relocate(); return; }
     setStatus('Disconnected — retrying…');
     setTimeout(() => { if (running) connect(); }, 2000);
   };

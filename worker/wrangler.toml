@@ -1,0 +1,11 @@
+name = "listenlink-links"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+routes = [
+  { pattern = "gggaudio.store/l/*", zone_name = "gggaudio.store" }
+]
+
+[[kv_namespaces]]
+binding = "STREAMS"
+id = "efb10043ce8f4ad98de43e45190b217e"
