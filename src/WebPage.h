@@ -33,11 +33,9 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
            background:#4f6bff; border:none; border-radius:12px; padding:14px 0;
            width:100%; cursor:pointer; }
   button:hover { background:#657eff; }
-  button.live { background:#2a2a33; color:#ff5d5d; }
-  button.mute { margin-top:10px; font-size:14px; font-weight:500; padding:10px 0;
-                background:#26262f; color:#b8b8c2; }
-  button.mute:hover { background:#30303b; }
-  button.mute.muted { color:#ffd24a; }
+  button.live { background:#2a2a33; color:#e8e8ec; }
+  button.live:hover { background:#30303b; }
+  button.live.muted { color:#ffd24a; }
   #status { margin-top:18px; font-size:14px; color:#b8b8c2; min-height:20px; }
   #meta { margin-top:6px; font-size:12px; color:#6a6a76; min-height:16px;
           font-variant-numeric: tabular-nums; }
@@ -57,7 +55,6 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
   <h1>ListenLink</h1>
   <div class="sub">Live from the master bus</div>
   <button id="btn">&#9654;&nbsp; Listen</button>
-  <button id="muteBtn" class="mute" hidden>&#128263;&nbsp; Mute</button>
   <div id="status">Press listen to start</div>
   <div id="meta"></div>
   <div id="meters">
@@ -68,7 +65,6 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <script>
 "use strict";
 const btn = document.getElementById('btn');
-const muteBtn = document.getElementById('muteBtn');
 const statusEl = document.getElementById('status');
 const metaEl = document.getElementById('meta');
 const metersEl = document.getElementById('meters');
@@ -326,8 +322,8 @@ function connect() {
 
 function setMuted(m) {
   muted = m;
-  muteBtn.classList.toggle('muted', m);
-  muteBtn.innerHTML = m ? '&#128266;&nbsp; Unmute' : '&#128263;&nbsp; Mute';
+  btn.classList.toggle('muted', m);
+  btn.innerHTML = m ? '&#128266;&nbsp; Unmute' : '&#128263;&nbsp; Mute';
   if (gain) gain.gain.setTargetAtTime(m ? 0 : 1, ctx.currentTime, 0.015);
   renderStatus();
 }
@@ -335,31 +331,13 @@ function setMuted(m) {
 function start() {
   running = true;
   btn.classList.add('live');
-  btn.innerHTML = '&#9632;&nbsp; Stop';
-  muteBtn.hidden = false;
+  btn.innerHTML = '&#128263;&nbsp; Mute';
   bytesIn = 0; lastRateT = 0; lastRateBytes = 0;
   delete metaEl.dataset.kbps;
   connect();
 }
 
-function stop() {
-  running = false; live = false;
-  btn.classList.remove('live');
-  btn.innerHTML = '&#9654;&nbsp; Listen';
-  muteBtn.hidden = true;
-  setMuted(false);
-  if (ws) { ws.onclose = null; try { ws.close(); } catch(_){} ws = null; }
-  if (decoder) { try { decoder.close(); } catch(_){} decoder = null; }
-  if (ctx) { try { ctx.close(); } catch(_){} ctx = null; node = null; gain = null; }
-  setStatus('Stopped');
-  metaEl.textContent = '';
-  metersEl.style.display = 'none';
-  dispL = 0; dispR = 0;
-  covL.style.left = '0%'; covR.style.left = '0%';
-}
-
-btn.addEventListener('click', () => { running ? stop() : start(); });
-muteBtn.addEventListener('click', () => setMuted(!muted));
+btn.addEventListener('click', () => { running ? setMuted(!muted) : start(); });
 </script>
 </body>
 </html>
