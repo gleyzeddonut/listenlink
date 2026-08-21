@@ -35,7 +35,15 @@ const offlinePage = (id) => `<!doctype html>
 <div class="card"><h1>ListenLink</h1>
 <p>This stream is offline right now.<br>Keep this link &mdash; it goes live again when the sender starts streaming.</p>
 </div>
-<script>setTimeout(function(){ location.reload(); }, 15000);</script>
+<script>
+// The id is validated as [a-z0-9]{6,32} before this page is built.
+(function poll() {
+  fetch('/l/${id}/resolve', { cache: 'no-store' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){ if (j && j.url) location.replace(j.url); else setTimeout(poll, 2500); })
+    .catch(function(){ setTimeout(poll, 2500); });
+})();
+</script>
 </body></html>`;
 
 async function readBody(request) {

@@ -46,8 +46,12 @@ public:
     {
         stopTunnel();
         {
+            // The short link is deterministic, so show it before the tunnel
+            // even exists — early clicks land on the offline page, which
+            // flips to the stream as soon as registration lands.
             const juce::ScopedLock sl(lock);
-            publicUrl.clear();
+            publicUrl = identity.id.isNotEmpty()
+                ? juce::String(kLinkService) + "/" + identity.id : juce::String();
             status = "Starting tunnel...";
         }
         port = localPort;
@@ -183,8 +187,11 @@ private:
             if (attempt > 0)
             {
                 {
+                    // Keep showing the short link while healing — it stays the
+                    // valid thing to share. Only a raw tunnel URL goes stale.
                     const juce::ScopedLock sl(lock);
-                    publicUrl.clear();
+                    if (! registered.load())
+                        publicUrl.clear();
                     status = "Tunnel dropped - reconnecting...";
                 }
                 const int backoffMs = juce::jmin(2000 * (1 << juce::jmin(attempt - 1, 4)), 30000);
@@ -194,7 +201,8 @@ private:
                     break;
             }
 
-            juce::StringArray args { exe, "tunnel", "--url", "http://127.0.0.1:" + juce::String(port) };
+            juce::StringArray args { exe, "tunnel", "--no-autoupdate",
+                                     "--url", "http://127.0.0.1:" + juce::String(port) };
             if (! proc.start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
             {
                 const juce::ScopedLock sl(lock);
@@ -227,12 +235,11 @@ private:
                                 // copying the wrong one. Reveal only the final link;
                                 // the tunnel URL appears solely if registration fails.
                                 const bool useShortLink = registerLink(tunnelUrl);
-                                if (useShortLink)
-                                    registered.store(true);
+                                registered.store(useShortLink);
                                 const juce::ScopedLock sl(lock);
                                 publicUrl = useShortLink
                                     ? juce::String(kLinkService) + "/" + identity.id
-                                    : tunnelUrl;
+                                    : tunnelUrl;   // link service unreachable: raw URL is the only working link
                                 status = "Public link active";
                             }
                         }
