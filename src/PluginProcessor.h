@@ -212,6 +212,8 @@ private:
 
             juce::String collected;
             char buf[2048];
+            bool urlFound = false;   // NOT getPublicUrl().isEmpty() — that now
+                                     // holds the short link before the scrape
 
             while (! threadShouldExit() && proc.isRunning())
             {
@@ -219,7 +221,7 @@ private:
                 if (n > 0)
                 {
                     collected += juce::String::fromUTF8(buf, n);
-                    if (getPublicUrl().isEmpty())
+                    if (! urlFound)
                     {
                         const int end = collected.indexOf(".trycloudflare.com");
                         if (end >= 0)
@@ -228,6 +230,7 @@ private:
                             if (start >= 0)
                             {
                                 const auto tunnelUrl = collected.substring(start, end) + ".trycloudflare.com";
+                                urlFound = true;
                                 attempt = 0;   // healthy again: future drops back off from scratch
 
                                 // Don't show the raw tunnel URL while registering — a
@@ -256,7 +259,7 @@ private:
             proc.kill();
         }
 
-        if (shouldRun.load() && getPublicUrl().isEmpty())
+        if (shouldRun.load() && ! registered.load())
         {
             const juce::ScopedLock sl(lock);
             status = "Tunnel exited before a URL appeared - is the internet up?";
