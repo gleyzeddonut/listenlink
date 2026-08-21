@@ -207,28 +207,17 @@ public:
                     "https://api.github.com/repos/gleyzeddonut/listenlink/releases/latest" }))
                 return;
 
-            const auto out = curl.readAllProcessOutput();
-            const auto tag = out.fromFirstOccurrenceOf("\"tag_name\"", false, false)
-                                .fromFirstOccurrenceOf(":", false, false)
-                                .fromFirstOccurrenceOf("\"", false, false)
-                                .upToFirstOccurrenceOf("\"", false, false)
-                                .trim();
-
-            juce::String pkgUrl;
-            for (auto rest = out; rest.contains("\"browser_download_url\"");)
-            {
-                rest = rest.fromFirstOccurrenceOf("\"browser_download_url\"", false, false)
-                           .fromFirstOccurrenceOf(":", false, false)
-                           .fromFirstOccurrenceOf("\"", false, false);
-                const auto url = rest.upToFirstOccurrenceOf("\"", false, false).trim();
-                if (url.endsWithIgnoreCase(".pkg")) { pkgUrl = url; break; }
-            }
+            const auto tag = curl.readAllProcessOutput()
+                                 .fromFirstOccurrenceOf("\"tag_name\"", false, false)
+                                 .fromFirstOccurrenceOf(":", false, false)
+                                 .fromFirstOccurrenceOf("\"", false, false)
+                                 .upToFirstOccurrenceOf("\"", false, false)
+                                 .trim();
 
             if (tag.startsWithChar('v') && isNewer(tag.substring(1), JucePlugin_VersionString))
             {
                 const juce::ScopedLock sl(lock());
                 latest() = tag;
-                downloadUrl() = pkgUrl;
             }
         });
     }
@@ -240,23 +229,15 @@ public:
         return latest();
     }
 
-    // Direct link to the new release's .pkg, or empty if the release had no pkg
-    // asset (then the button falls back to the releases page).
-    static juce::String getDownloadUrl()
-    {
-        const juce::ScopedLock sl(lock());
-        return downloadUrl();
-    }
-
-    // Fallback when no direct pkg link was found. Existing users updating must
-    // never land on a paywalled page, so this stays on GitHub, not the store.
+    // Where the update button lands. Baked into shipped binaries, so this URL
+    // must stay alive forever and must never become a paywalled page — the
+    // site's download page auto-serves the newest installer.
     static constexpr const char* releasePageUrl =
-        "https://github.com/gleyzeddonut/listenlink/releases/latest";
+        "https://gggaudio.store/listenlink/download/";
 
 private:
     static juce::CriticalSection& lock()  { static juce::CriticalSection l; return l; }
     static juce::String& latest()         { static juce::String s; return s; }
-    static juce::String& downloadUrl()    { static juce::String s; return s; }
 
     static bool isNewer(const juce::String& remote, const juce::String& local)
     {

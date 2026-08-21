@@ -241,12 +241,7 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     addChildComponent(popup);
 
     updateButton.onClick = []
-    {
-        const auto direct = UpdateChecker::getDownloadUrl();
-        juce::URL(direct.isNotEmpty() ? direct
-                                      : juce::String(UpdateChecker::releasePageUrl))
-            .launchInDefaultBrowser();
-    };
+    { juce::URL(UpdateChecker::releasePageUrl).launchInDefaultBrowser(); };
     addChildComponent(updateButton);
     UpdateChecker::checkAsync();
 
