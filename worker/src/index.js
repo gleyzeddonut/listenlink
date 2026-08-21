@@ -78,7 +78,7 @@ export default {
       if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url))
         return new Response('Bad url', { status: 400, headers: CORS });
 
-      await env.STREAMS.put(key, JSON.stringify({ token: body.token, url }),
+      await env.STREAMS.put(key, JSON.stringify({ token: body.token, url, t: Date.now() }),
                             { expirationTtl: TTL_SECONDS });
       return new Response(null, { status: 204, headers: CORS });
     }
@@ -98,14 +98,22 @@ export default {
 
       // Probe the tunnel before redirecting: a crashed DAW never unregisters,
       // and a dead trycloudflare host would show listeners a raw Cloudflare
-      // error instead of our offline page.
+      // error instead of our offline page. Skip the probe for registrations
+      // under 2 minutes old — fresh trycloudflare hostnames can take up to a
+      // minute to resolve globally, so probing them reports false "offline"
+      // right when the producer first shares the link. A just-registered
+      // mapping means the plugin was alive seconds ago; trust it.
       let alive = false;
       if (entry) {
-        try {
-          const probe = await fetch(entry.url + '/', {
-            redirect: 'manual', signal: AbortSignal.timeout(4000) });
-          alive = probe.status >= 200 && probe.status < 400;
-        } catch (_) { alive = false; }
+        if (entry.t && Date.now() - entry.t < 120000) {
+          alive = true;
+        } else {
+          try {
+            const probe = await fetch(entry.url + '/', {
+              redirect: 'manual', signal: AbortSignal.timeout(4000) });
+            alive = probe.status >= 200 && probe.status < 400;
+          } catch (_) { alive = false; }
+        }
       }
       if (!alive)
         return new Response(offlinePage(parts[1]),
