@@ -220,20 +220,20 @@ private:
                             if (start >= 0)
                             {
                                 const auto tunnelUrl = collected.substring(start, end) + ".trycloudflare.com";
-                                {
-                                    // Show the raw tunnel link immediately; upgrade to the
-                                    // short link below once the registration succeeds.
-                                    const juce::ScopedLock sl(lock);
-                                    publicUrl = tunnelUrl;
-                                    status = "Public link active";
-                                    attempt = 0;   // healthy again: future drops back off from scratch
-                                }
-                                if (registerLink(tunnelUrl))
-                                {
+                                attempt = 0;   // healthy again: future drops back off from scratch
+
+                                // Don't show the raw tunnel URL while registering — a
+                                // link that swaps out from under the user invites
+                                // copying the wrong one. Reveal only the final link;
+                                // the tunnel URL appears solely if registration fails.
+                                const bool useShortLink = registerLink(tunnelUrl);
+                                if (useShortLink)
                                     registered.store(true);
-                                    const juce::ScopedLock sl(lock);
-                                    publicUrl = juce::String(kLinkService) + "/" + identity.id;
-                                }
+                                const juce::ScopedLock sl(lock);
+                                publicUrl = useShortLink
+                                    ? juce::String(kLinkService) + "/" + identity.id
+                                    : tunnelUrl;
+                                status = "Public link active";
                             }
                         }
                         if (collected.length() > 65536)
