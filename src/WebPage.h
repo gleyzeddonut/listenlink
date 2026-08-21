@@ -1,7 +1,8 @@
 #pragma once
 
 // The listener page served at "/". Self-contained: connects a WebSocket to /ws,
-// receives 16-bit interleaved stereo PCM, and plays it through an AudioWorklet.
+// receives 16-bit interleaved stereo PCM (or Opus), and plays it through an
+// AudioWorklet. Visual design from design_handoff_listener_page (2026-08).
 static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <html lang="en">
 <head>
@@ -19,57 +20,140 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <meta name="twitter:image" content="https://gggaudio.store/img/listenlink-icon@2x.png">
 <link rel="icon" href="https://gggaudio.store/img/listenlink-icon.png">
 <link rel="apple-touch-icon" href="https://gggaudio.store/img/listenlink-icon@2x.png">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         background:#101014; color:#e8e8ec; min-height:100vh; display:flex;
-         align-items:center; justify-content:center; }
-  .card { background:#1a1a21; border:1px solid #2a2a33; border-radius:16px;
-          padding:40px 44px; width:min(420px, 92vw); text-align:center; }
-  h1 { font-size:20px; letter-spacing:.3px; margin-bottom:6px; }
-  .sub { color:#8a8a96; font-size:13px; margin-bottom:28px; }
-  button { font:inherit; font-size:17px; font-weight:600; color:#fff;
-           background:#4f6bff; border:none; border-radius:12px; padding:14px 0;
-           width:100%; cursor:pointer; }
-  button:hover { background:#657eff; }
-  button.live { background:#2a2a33; color:#e8e8ec; }
-  button.live:hover { background:#30303b; }
-  button.live.muted { color:#ffd24a; }
-  #status { margin-top:18px; font-size:14px; color:#b8b8c2; min-height:20px; }
-  #meta { margin-top:6px; font-size:12px; color:#6a6a76; min-height:16px;
-          font-variant-numeric: tabular-nums; }
-  #meters { margin-top:16px; display:none; }
-  .bar { position:relative; height:5px; border-radius:3px; margin-top:4px; overflow:hidden;
-         background:linear-gradient(90deg,#3ddc84 0%,#3ddc84 55%,#ffd24a 80%,#ff5d5d 100%); }
-  .cover { position:absolute; top:0; right:0; bottom:0; left:0; background:#26262f;
-           transition:left 60ms linear; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
-         background:#3ddc84; margin-right:6px; vertical-align:1px;
-         animation:pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity:.35; } }
+  body { font-family: 'Inter Tight', -apple-system, 'Segoe UI', Helvetica, sans-serif;
+         background:#0c0c10; color:#e8e8ec; min-height:100vh; display:flex;
+         align-items:center; justify-content:center; padding:28px; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  .col { width:min(400px, 100%); }
+
+  /* ---- header ---- */
+  .hdr { display:flex; align-items:center; justify-content:space-between;
+         margin-bottom:22px; padding:0 4px; }
+  .brand { display:flex; align-items:center; gap:9px;
+           font-size:13px; font-weight:600; letter-spacing:.01em; color:#e8e8ec; }
+  .mark { width:18px; height:18px; border:2px solid #4f6bff; border-radius:50%;
+          display:flex; align-items:center; justify-content:center; }
+  .mark span { width:5px; height:5px; background:#4f6bff; border-radius:50%; }
+  .pill { display:flex; align-items:center; gap:7px; font-size:9.5px;
+          letter-spacing:.16em; padding:5px 11px; border-radius:999px;
+          border:1px solid #23232c; color:#6a6a76; }
+  .pill .pdot { width:5px; height:5px; border-radius:50%; background:#4f4f5a; }
+  .pill.live { border-color:rgba(61,220,132,.26); color:#3ddc84;
+               background:rgba(61,220,132,.06); }
+  .pill.live .pdot { background:#3ddc84; animation:lldot 1.6s infinite; }
+  @keyframes lldot { 50% { opacity:.28; } }
+  @media (prefers-reduced-motion: reduce) {
+    .pill.live .pdot { animation:none; }
+  }
+
+  /* ---- card ---- */
+  .card { background:#16161c; border:1px solid #23232c; border-radius:20px;
+          padding:38px 34px 30px; box-shadow:0 30px 60px -34px rgba(0,0,0,.85); }
+  .stack { display:flex; flex-direction:column; align-items:center; gap:26px;
+           text-align:center; }
+  h1 { font-size:22px; font-weight:600; letter-spacing:-.02em; line-height:1.2;
+       color:#e8e8ec; }
+  .sub { font-size:13.5px; line-height:1.5; color:#8a8a96; text-wrap:pretty;
+         margin-top:7px; }
+
+  /* ---- circular action button ---- */
+  #btn { width:76px; height:76px; border-radius:50%; border:none; cursor:pointer;
+         display:flex; align-items:center; justify-content:center; padding:0;
+         background:#4f6bff; color:#fff; box-shadow:0 14px 32px -12px #4f6bff;
+         transition:filter 140ms ease, background 200ms ease; }
+  #btn:hover { filter:brightness(1.08); }
+  #btn.running { background:#22222b; color:#ff5d5d;
+                 box-shadow:inset 0 0 0 1px #2c2c37; }
+  #btn.running.muted { color:#ffd24a;
+                       box-shadow:inset 0 0 0 1px rgba(255,210,74,.3); }
+  .tri { width:0; height:0; margin-left:5px; display:block;
+         border-left:17px solid currentColor;
+         border-top:11px solid transparent; border-bottom:11px solid transparent; }
+  .sq { width:15px; height:15px; border-radius:2px; background:currentColor;
+        display:block; }
+
+  /* ---- divider + meters ---- */
+  .divider { height:1px; background:#20202a; margin:30px -34px 0; }
+  .meters { padding-top:22px; }
+  .mgrid { display:grid; grid-template-columns:12px 1fr; gap:9px 11px;
+           align-items:center; }
+  .mlabel { font-size:9.5px; color:#4f4f5a; }
+  .track { height:6px; border-radius:3px; background:#20202a; overflow:hidden;
+           position:relative; }
+  .fill { position:absolute; top:0; bottom:0; left:0; width:0; border-radius:3px;
+          background:#3ddc84; transition:width 70ms linear; }
+  .scale { margin-left:23px; margin-top:9px; position:relative; height:11px;
+           font-size:9px; letter-spacing:.04em; color:#41414b; }
+  .scale span { position:absolute; top:0; }
+
+  /* ---- warning banner ---- */
+  .warn[hidden] { display:none; }
+  .warn { margin-top:20px; display:flex; align-items:flex-start; gap:9px;
+          padding:11px 13px; border-radius:11px; background:rgba(255,210,74,.07);
+          border:1px solid rgba(255,210,74,.2); }
+  .warn .wdot { width:6px; height:6px; border-radius:50%; background:#ffd24a;
+                margin-top:6px; flex:none; }
+  .warn p { font-size:12.5px; line-height:1.45; color:#e0c880; text-wrap:pretty; }
+
+  /* ---- footer ---- */
+  .foot { margin-top:16px; text-align:center; font-size:10px;
+          letter-spacing:.14em; color:#5c5c68; text-transform:uppercase; }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>ListenLink</h1>
-  <div class="sub">Live from the master bus</div>
-  <button id="btn">&#9654;&nbsp; Listen</button>
-  <div id="status">Press listen to start</div>
-  <div id="meta"></div>
-  <div id="meters">
-    <div class="bar"><div class="cover" id="covL"></div></div>
-    <div class="bar"><div class="cover" id="covR"></div></div>
+<div class="col">
+  <div class="hdr">
+    <div class="brand"><span class="mark"><span></span></span>ListenLink</div>
+    <div class="pill mono" id="pill"><span class="pdot"></span><span id="pillText">OFFLINE</span></div>
   </div>
+  <div class="card">
+    <div class="stack">
+      <div>
+        <h1 id="headline">Live from the master bus</h1>
+        <p class="sub" id="subline">Press play to join the session. Nothing to install.</p>
+      </div>
+      <button id="btn" aria-label="Start listening"><span id="icon" class="tri"></span></button>
+    </div>
+    <div class="divider"></div>
+    <div class="meters">
+      <div class="mgrid">
+        <span class="mlabel mono">L</span>
+        <div class="track"><div class="fill" id="fillL"></div></div>
+        <span class="mlabel mono">R</span>
+        <div class="track"><div class="fill" id="fillR"></div></div>
+      </div>
+      <div class="scale mono">
+        <span style="left:0">-60</span>
+        <span style="left:60%;transform:translateX(-50%)">-24</span>
+        <span style="left:80%;transform:translateX(-50%)">-12</span>
+        <span style="left:90%;transform:translateX(-50%)">-6</span>
+        <span style="right:0">0</span>
+      </div>
+    </div>
+    <div class="warn" id="warn" role="status" aria-live="polite" hidden>
+      <span class="wdot"></span>
+      <p>Your connection is struggling &mdash; audio may drop out while the buffer rebuilds.</p>
+    </div>
+  </div>
+  <div class="foot mono" id="foot">READY</div>
 </div>
 <script>
 "use strict";
 const btn = document.getElementById('btn');
-const statusEl = document.getElementById('status');
-const metaEl = document.getElementById('meta');
-const metersEl = document.getElementById('meters');
-const covL = document.getElementById('covL');
-const covR = document.getElementById('covR');
+const icon = document.getElementById('icon');
+const pill = document.getElementById('pill');
+const pillText = document.getElementById('pillText');
+const headline = document.getElementById('headline');
+const subline = document.getElementById('subline');
+const fillL = document.getElementById('fillL');
+const fillR = document.getElementById('fillR');
+const warn = document.getElementById('warn');
+const foot = document.getElementById('foot');
 
 let ctx = null, node = null, gain = null, ws = null;
 let running = false, live = false, muted = false;
@@ -79,27 +163,74 @@ let streamRate = 48000;
 let codec = 'pcm', opusBitrate = 0, decoder = null, opusTime = 0, forcePcm = false;
 let listeners = 0;
 let dispL = 0, dispR = 0;
-let bytesIn = 0, lastRateT = 0, lastRateBytes = 0;
+let lastBufMs = 0, lastUnderruns = 0, lastUnderrunAt = 0, bufferSeen = false;
+let disconnected = false;
 
 function levelPct(v) {
   const db = 20 * Math.log10(Math.max(v, 1e-4));
   return Math.max(0, Math.min(100, (db + 60) / 60 * 100));
 }
 
+function fillColor(pct) {
+  return pct > 90 ? '#ff5d5d' : pct > 80 ? '#ffd24a' : '#3ddc84';
+}
+
 function setMeters(pkL, pkR) {
   dispL = Math.max(pkL, dispL * 0.86);
   dispR = Math.max(pkR, dispR * 0.86);
-  covL.style.left = levelPct(dispL).toFixed(1) + '%';
-  covR.style.left = levelPct(dispR).toFixed(1) + '%';
+  const pL = levelPct(dispL), pR = levelPct(dispR);
+  fillL.style.width = pL.toFixed(1) + '%';
+  fillR.style.width = pR.toFixed(1) + '%';
+  fillL.style.background = fillColor(pL);
+  fillR.style.background = fillColor(pR);
 }
 
-function renderStatus() {
-  if (!live) return;
-  const q = codec === 'opus' ? 'Opus ' + Math.round(opusBitrate / 1000) + ' kbps'
-                             : (streamRate / 1000) + ' kHz lossless';
-  setStatus('<span class="dot"></span>Live &mdash; ' + q
-    + (listeners > 1 ? ' &middot; ' + listeners + ' listening' : '')
-    + (muted ? ' &middot; muted' : ''));
+// ---- UI state: idle / connecting / live (+ muted) ----
+function renderUI() {
+  const state = !running ? 'idle' : (live && !disconnected) ? 'live' : 'connecting';
+
+  pill.classList.toggle('live', state === 'live');
+  pillText.textContent = state === 'live' ? 'LIVE'
+                        : state === 'connecting' ? 'CONNECTING' : 'OFFLINE';
+
+  if (state === 'idle') {
+    headline.textContent = 'Live from the master bus';
+    subline.textContent = 'Press play to join the session. Nothing to install.';
+  } else if (state === 'connecting') {
+    headline.innerHTML = 'Connecting&hellip;';
+    subline.textContent = 'Audio is streaming in real time from the studio.';
+  } else if (muted) {
+    headline.textContent = 'Muted';
+    subline.innerHTML = 'Tap to unmute &mdash; the stream is still running.';
+  } else {
+    headline.innerHTML = 'You&rsquo;re listening';
+    subline.textContent = 'Audio is streaming in real time from the studio.';
+  }
+
+  btn.classList.toggle('running', running);
+  btn.classList.toggle('muted', running && muted);
+  icon.className = (!running || muted) ? 'tri' : 'sq';
+  btn.setAttribute('aria-label', !running ? 'Start listening' : muted ? 'Unmute' : 'Mute');
+
+  renderFoot();
+}
+
+function renderFoot() {
+  if (!live || disconnected) { foot.textContent = 'READY'; return; }
+  const q = codec === 'opus' ? 'OPUS ' + Math.round(opusBitrate / 1000)
+                             : (streamRate / 1000) + ' KHZ LOSSLESS';
+  foot.textContent = q + ' · ' + lastBufMs + ' MS BUFFER';
+}
+
+// Debounced connection-quality banner: recent underruns, a starved buffer,
+// or an active reconnect.
+function renderWarn() {
+  const now = performance.now();
+  const struggling =
+       (now - lastUnderrunAt < 8000 && lastUnderrunAt > 0)
+    || (live && !disconnected && bufferSeen && lastBufMs < 50)
+    || (running && disconnected);
+  warn.hidden = !struggling;
 }
 
 function fallbackToPcm() {
@@ -202,19 +333,6 @@ class PCMPlayer extends AudioWorkletProcessor {
 registerProcessor('pcm-player', PCMPlayer);
 `;
 
-function setStatus(html) { statusEl.innerHTML = html; }
-
-function updateMeta(bufMs, underruns) {
-  const now = performance.now();
-  if (now - lastRateT > 1500) {
-    if (lastRateT > 0)
-      metaEl.dataset.kbps = Math.round((bytesIn - lastRateBytes) * 8 / (now - lastRateT));
-    lastRateT = now; lastRateBytes = bytesIn;
-  }
-  metaEl.textContent = (metaEl.dataset.kbps || '–') + ' kbit/s · buffer ' + bufMs + ' ms'
-    + (underruns ? ' · ' + underruns + ' dropouts' : '');
-}
-
 async function initAudio() {
   if (ctx) { try { await ctx.close(); } catch(_){} ctx = null; node = null; }
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: streamRate });
@@ -222,7 +340,14 @@ async function initAudio() {
   await ctx.audioWorklet.addModule(url);
   node = new AudioWorkletNode(ctx, 'pcm-player', { outputChannelCount: [2] });
   node.port.onmessage = (e) => {
-    updateMeta(Math.round(e.data.buffered / ctx.sampleRate * 1000), e.data.underruns);
+    lastBufMs = Math.round(e.data.buffered / ctx.sampleRate * 1000);
+    if (lastBufMs >= 100) bufferSeen = true;
+    if (e.data.underruns > lastUnderruns) {
+      lastUnderruns = e.data.underruns;
+      lastUnderrunAt = performance.now();
+    }
+    renderFoot();
+    renderWarn();
   };
   gain = ctx.createGain();
   gain.gain.value = muted ? 0 : 1;
@@ -234,7 +359,6 @@ async function initAudio() {
 // The stream moved (tunnel restarted): ask the link service where it lives
 // now, then reconnect there. Falls back to plain retries if it can't answer.
 function relocate() {
-  setStatus('Reconnecting&hellip;');
   fetch('https://gggaudio.store/l/' + streamId + '/resolve', { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
@@ -249,18 +373,14 @@ function relocate() {
 
 function connect() {
   const proto = wsSecure ? 'wss://' : 'ws://';
-  setStatus('Connecting…');
   ws = new WebSocket(proto + wsHost + '/ws' + (forcePcm ? '?fmt=pcm' : ''));
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { wsFails = 0; };
   ws.onmessage = async (e) => {
     if (typeof e.data === 'string') {
       const msg = JSON.parse(e.data);
-      if (msg.listeners !== undefined) {
-        listeners = msg.listeners;
-        renderStatus();
-      }
       if (msg.streamId) streamId = msg.streamId;
+      if (msg.listeners !== undefined) listeners = msg.listeners;
       if (msg.sampleRate) {
         const newCodec = msg.codec || 'pcm';
         if (newCodec === 'opus' && typeof AudioDecoder === 'undefined') {
@@ -281,13 +401,13 @@ function connect() {
           }
         }
         live = true;
-        metersEl.style.display = 'block';
-        renderStatus();
+        disconnected = false;
+        renderUI();
+        renderWarn();
       }
       return;
     }
     if (!node) return;
-    bytesIn += e.data.byteLength;
     if (codec === 'opus') {
       if (decoder && decoder.state === 'configured') {
         decoder.decode(new EncodedAudioChunk({
@@ -312,9 +432,11 @@ function connect() {
   ws.onclose = () => {
     if (!running) return;
     live = false;
+    disconnected = true;
+    renderUI();
+    renderWarn();
     wsFails++;
     if (wsFails >= 3 && streamId) { relocate(); return; }
-    setStatus('Disconnected — retrying…');
     setTimeout(() => { if (running) connect(); }, 2000);
   };
   ws.onerror = () => { try { ws.close(); } catch(_){} };
@@ -322,22 +444,27 @@ function connect() {
 
 function setMuted(m) {
   muted = m;
-  btn.classList.toggle('muted', m);
-  btn.innerHTML = m ? '&#128266;&nbsp; Unmute' : '&#128263;&nbsp; Mute';
   if (gain) gain.gain.setTargetAtTime(m ? 0 : 1, ctx.currentTime, 0.015);
-  renderStatus();
+  renderUI();
 }
 
 function start() {
   running = true;
-  btn.classList.add('live');
-  btn.innerHTML = '&#128263;&nbsp; Mute';
-  bytesIn = 0; lastRateT = 0; lastRateBytes = 0;
-  delete metaEl.dataset.kbps;
+  disconnected = false;
+  renderUI();
   connect();
 }
 
+// Not reachable from the UI; teardown for pagehide only.
+function stop() {
+  running = false; live = false;
+  if (ws) { ws.onclose = null; try { ws.close(); } catch(_){} ws = null; }
+  if (decoder) { try { decoder.close(); } catch(_){} decoder = null; }
+  if (ctx) { try { ctx.close(); } catch(_){} ctx = null; node = null; gain = null; }
+}
+
 btn.addEventListener('click', () => { running ? setMuted(!muted) : start(); });
+window.addEventListener('pagehide', stop);
 </script>
 </body>
 </html>
