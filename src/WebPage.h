@@ -168,6 +168,22 @@ let listeners = 0;
 let dispL = 0, dispR = 0;
 let lastBufMs = 0, lastUnderruns = 0, lastUnderrunAt = 0, bufferSeen = false;
 let disconnected = false;
+let mediaDest = null, reconnectTimer = 0;
+
+// Playback goes through a hidden <audio> element (fed by a MediaStream
+// destination) instead of straight to ctx.destination: iOS only keeps audio
+// running behind a locked screen / in the background for media-element
+// playback, and it is also what puts the stream on the lock screen.
+const audioEl = document.createElement('audio');
+audioEl.setAttribute('playsinline', '');
+audioEl.style.display = 'none';
+document.body.appendChild(audioEl);
+// iOS ignores Media Session metadata applied before the element is actually
+// playing - (re)apply it whenever playback (re)starts.
+audioEl.addEventListener('playing', () => setupMediaSession());
+// Silent 2-sample WAV: played inside the click gesture to unlock the element
+// before the real stream (which arrives async, outside the gesture) replaces it.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAAAA';
 
 function levelPct(v) {
   const db = 20 * Math.log10(Math.max(v, 1e-4));
@@ -215,7 +231,33 @@ function renderUI() {
   icon.className = (!running || muted) ? 'tri' : 'sq';
   btn.setAttribute('aria-label', !running ? 'Start listening' : muted ? 'Unmute' : 'Mute');
 
+  if ('mediaSession' in navigator)
+    navigator.mediaSession.playbackState = !running ? 'none' : muted ? 'paused' : 'playing';
+
   renderFoot();
+}
+
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: 'ListenLink',
+    artist: 'Live from the master bus',
+    artwork: [
+      { src: 'https://gggaudio.store/img/listenlink-icon.png', sizes: '180x180', type: 'image/png' },
+      { src: 'https://gggaudio.store/img/listenlink-icon@2x.png', sizes: '360x360', type: 'image/png' }
+    ]
+  });
+  // Lock-screen pause maps to mute (the socket keeps flowing, same as the
+  // page button) so play is instant again.
+  try { navigator.mediaSession.setActionHandler('pause', () => setMuted(true)); } catch(_){}
+  try { navigator.mediaSession.setActionHandler('play', () => { setMuted(false); resumeOutput(); }); } catch(_){}
+  // Live broadcast: no scrub bar / duration on the card.
+  try { navigator.mediaSession.setPositionState({ duration: Infinity, position: 0, playbackRate: 1 }); } catch(_){}
+}
+
+function resumeOutput() {
+  if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+  if (audioEl.srcObject && audioEl.paused) audioEl.play().catch(() => {});
 }
 
 function renderFoot() {
@@ -355,8 +397,20 @@ async function initAudio() {
   gain = ctx.createGain();
   gain.gain.value = muted ? 0 : 1;
   node.connect(gain);
-  gain.connect(ctx.destination);
+  try {
+    mediaDest = ctx.createMediaStreamDestination();
+    gain.connect(mediaDest);
+    audioEl.srcObject = mediaDest.stream;
+    await audioEl.play();
+  } catch (_) {
+    // Element route unavailable: plain WebAudio output (pre-v0.6 behavior).
+    try { gain.disconnect(mediaDest); } catch(_){}
+    try { audioEl.pause(); } catch(_){}
+    audioEl.srcObject = null;
+    gain.connect(ctx.destination);
+  }
   await ctx.resume();
+  setupMediaSession();
 }
 
 // The stream moved (tunnel restarted): ask the link service where it lives
@@ -371,10 +425,23 @@ function relocate() {
       }
     })
     .catch(() => {})
-    .finally(() => { setTimeout(() => { if (running) connect(); }, 1500); });
+    .finally(() => { scheduleReconnect(1500); });
+}
+
+function scheduleReconnect(ms) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => { if (running) connect(); }, ms);
 }
 
 function connect() {
+  if (ws && ws.readyState <= WebSocket.OPEN) return;  // already connecting/open
+  if (ws) {
+    // Detach the old socket completely: a CLOSING socket's late onclose would
+    // otherwise mark the fresh connection as disconnected and double-schedule
+    // reconnects.
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    try { ws.close(); } catch(_){}
+  }
   const proto = wsSecure ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + wsHost + '/ws' + (forcePcm ? '?fmt=pcm' : ''));
   ws.binaryType = 'arraybuffer';
@@ -440,7 +507,7 @@ function connect() {
     renderWarn();
     wsFails++;
     if (wsFails >= 3 && streamId) { relocate(); return; }
-    setTimeout(() => { if (running) connect(); }, 2000);
+    scheduleReconnect(2000);
   };
   ws.onerror = () => { try { ws.close(); } catch(_){} };
 }
@@ -454,6 +521,9 @@ function setMuted(m) {
 function start() {
   running = true;
   disconnected = false;
+  audioEl.loop = true;
+  audioEl.src = SILENT_WAV;          // unlock the element inside the gesture
+  audioEl.play().catch(() => {});    // srcObject replaces this once audio inits
   renderUI();
   connect();
 }
@@ -461,13 +531,27 @@ function start() {
 // Not reachable from the UI; teardown for pagehide only.
 function stop() {
   running = false; live = false;
+  clearTimeout(reconnectTimer);
   if (ws) { ws.onclose = null; try { ws.close(); } catch(_){} ws = null; }
   if (decoder) { try { decoder.close(); } catch(_){} decoder = null; }
   if (ctx) { try { ctx.close(); } catch(_){} ctx = null; node = null; gain = null; }
+  try { audioEl.pause(); } catch(_){}
+  audioEl.srcObject = null;
 }
 
 btn.addEventListener('click', () => { running ? setMuted(!muted) : start(); });
 window.addEventListener('pagehide', stop);
+
+// Coming back from a locked screen or background tab: the context may be
+// suspended and reconnect timers throttled - kick both immediately.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !running) return;
+  resumeOutput();
+  if (!ws || ws.readyState > WebSocket.OPEN) {
+    clearTimeout(reconnectTimer);
+    connect();
+  }
+});
 </script>
 </body>
 </html>

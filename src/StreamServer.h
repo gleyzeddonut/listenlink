@@ -34,6 +34,24 @@ public:
     void setStreamId(const juce::String& s) { const juce::ScopedLock sl(idLock); streamId = s; }
     juce::String getStreamId() const        { const juce::ScopedLock sl(idLock); return streamId; }
 
+    // Gate for the whole share path: when off, new /ws upgrades are refused
+    // and connected listeners are kicked. The warm (unregistered) tunnel can
+    // then never carry audio — only Create Public Link opens the tap.
+    void setSharing(bool on)
+    {
+        sharing.store(on);
+        if (! on)
+        {
+            const juce::ScopedLock sl(clientsLock);
+            for (auto& c : clients)
+            {
+                c->dead = true;
+                if (c->sock != nullptr)
+                    c->sock->close();
+            }
+        }
+    }
+
     // Audio thread. Interleaved stereo floats, numFrames sample-frames.
     void pushAudio(const float* interleavedStereo, int numFrames);
 
@@ -75,6 +93,7 @@ private:
     std::unique_ptr<Broadcaster> broadcaster;
 
     std::atomic<bool> serverRunning { false };
+    std::atomic<bool> sharing { false };
     std::atomic<int> port { 0 };
     std::atomic<double> sampleRate { 48000.0 };
     std::atomic<int> streamMode { 0 };

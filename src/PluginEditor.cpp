@@ -220,14 +220,18 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
 
     createButton.onClick = [this]
     {
-        processor.tunnel.startTunnel(processor.server.getPort());
+        processor.server.setSharing(true);
+        processor.tunnel.activate(processor.server.getPort());
         updateState();
     };
     addAndMakeVisible(createButton);
 
     stopButton.onClick = [this]
     {
-        processor.tunnel.stopTunnel();
+        // Order matters: close the tap (kicks listeners, refuses new ones)
+        // before unregistering, so nobody can slip in during the teardown.
+        processor.server.setSharing(false);
+        processor.tunnel.deactivate();
         updateState();
     };
     addChildComponent(stopButton);
@@ -249,12 +253,15 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     startTimerHz(30);
     updateState();
 
-    TunnelManager::prefetchAsync();
+    // Pre-warm: opening the editor starts the tunnel (and downloads
+    // cloudflared if needed) so Create Public Link is effectively instant
+    // and the tunnel hostname has usually propagated through DNS already.
+    processor.tunnel.warmUp(processor.server.getPort());
 }
 
 int ListenLinkEditor::tunnelState() const
 {
-    if (! processor.tunnel.isTunnelActive())
+    if (! processor.tunnel.isSharing())
         return 0;
     return processor.tunnel.getPublicUrl().isEmpty() ? 1 : 2;
 }
@@ -417,10 +424,18 @@ void ListenLinkEditor::paint(juce::Graphics& g)
 
     if (state == 2)
     {
-        g.setColour(ll::green);
+        // The link shows instantly, so this dot is the only honest signal of
+        // whether the tunnel behind it is actually up yet.
+        const bool reg = processor.tunnel.isRegistered();
+        const auto st = processor.tunnel.getStatus();
+        const bool err = st.contains("Couldn't") || st.contains("Failed") || st.contains("exited");
+        const juce::String cap = reg ? "tunnel up" : err ? "tunnel down" : "starting...";
+        g.setColour(reg ? ll::green : err ? ll::red : ll::dim);
         g.setFont(ll::sans(10.0f));
-        g.fillEllipse(455.0f, 201.5f, 5.0f, 5.0f);
-        g.drawText("tunnel up", 464, 198, 62, 12, juce::Justification::centredLeft);
+        const auto capW = ll::textWidth(ll::sans(10.0f), cap);
+        g.fillEllipse(526.0f - capW - 9.0f, 201.5f, 5.0f, 5.0f);
+        g.drawText(cap, (int) (526.0f - capW), 198, (int) capW + 2, 12,
+                   juce::Justification::centredLeft);
 
         g.setColour(ll::bg);
         g.fillRoundedRectangle(34.0f, 220.0f, 340.0f, 34.0f, 7.0f);
