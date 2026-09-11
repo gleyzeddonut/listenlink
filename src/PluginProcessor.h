@@ -141,6 +141,29 @@ public:
             .getChildFile("Application Support/ListenLink/cloudflared");
     }
 
+    // cloudflared silently loads ~/.cloudflared/config.yml even for quick
+    // tunnels, and a named tunnel's ingress rules there take precedence over
+    // our --url: the quick tunnel's hostname matches none of them, so every
+    // listener request falls through to the catch-all (typically
+    // http_status:404). Seen in the wild 2026-09-10 on a machine that also ran
+    // an unrelated named tunnel. Pointing --config at our own minimal file
+    // keeps the user's config out of the picture. /dev/null works too (with a
+    // harmless "file was empty" log line) and is the fallback if we can't write.
+    static juce::String isolatedConfigPath()
+    {
+        const auto file = downloadedBinary().getSiblingFile("cloudflared-config.yml");
+        const juce::String contents =
+            "# Written by ListenLink. Passed to cloudflared via --config so a user-level\n"
+            "# ~/.cloudflared/config.yml (named-tunnel ingress rules) cannot hijack the\n"
+            "# quick tunnel. Keep this file minimal.\n"
+            "no-autoupdate: true\n";
+        if (file.existsAsFile() && file.loadFileAsString() == contents)
+            return file.getFullPathName();
+        if (file.getParentDirectory().createDirectory() && file.replaceWithText(contents))
+            return file.getFullPathName();
+        return "/dev/null";
+    }
+
     static juce::String findCloudflared()
     {
         for (const char* p : { "/opt/homebrew/bin/cloudflared",
@@ -251,7 +274,8 @@ private:
                     break;
             }
 
-            juce::StringArray args { exe, "tunnel", "--no-autoupdate",
+            juce::StringArray args { exe, "--config", isolatedConfigPath(),
+                                     "tunnel", "--no-autoupdate",
                                      "--url", "http://127.0.0.1:" + juce::String(port) };
             if (! proc.start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
             {
