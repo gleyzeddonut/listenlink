@@ -244,8 +244,7 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     };
     addChildComponent(popup);
 
-    updateButton.onClick = []
-    { juce::URL(UpdateChecker::releasePageUrl).launchInDefaultBrowser(); };
+    updateButton.onClick = [] { openDownloadPage(); };
     addChildComponent(updateButton);
     UpdateChecker::checkAsync();
 
@@ -335,6 +334,30 @@ void ListenLinkEditor::updateState()
     repaint();
 }
 
+// launchInDefaultBrowser goes through NSWorkspace; if a host process ever
+// refuses that, /usr/bin/open is a second route to the same page.
+void ListenLinkEditor::openDownloadPage()
+{
+    if (! juce::URL(UpdateChecker::releasePageUrl).launchInDefaultBrowser())
+    {
+        juce::ChildProcess open;
+        open.start(juce::StringArray { "/usr/bin/open", UpdateChecker::releasePageUrl });
+    }
+}
+
+void ListenLinkEditor::mouseDown(const juce::MouseEvent& e)
+{
+    if (updateAvailable() && subtitleRect().contains(e.getPosition()))
+        openDownloadPage();
+}
+
+void ListenLinkEditor::mouseMove(const juce::MouseEvent& e)
+{
+    setMouseCursor(updateAvailable() && subtitleRect().contains(e.getPosition())
+                       ? juce::MouseCursor::PointingHandCursor
+                       : juce::MouseCursor::NormalCursor);
+}
+
 void ListenLinkEditor::resized()
 {
     meter.setBounds(34, 118, 492, 44);
@@ -370,14 +393,19 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         g.drawText("ListenLink", 58, 20, 300, 17, juce::Justification::centredLeft);
 
         const bool serving = processor.server.isServerRunning();
-        g.setColour(ll::dim);
+        const auto newer = UpdateChecker::getAvailableUpdate();
+        g.setColour(newer.isNotEmpty() ? ll::accent : ll::dim);
         g.setFont(ll::sans(11.0f));
         // Version first: "which build is this?" is the first question in every
-        // support exchange, and the DAW rarely shows it anywhere.
-        const juce::String ver = "v" JucePlugin_VersionString + juce::String::fromUTF8(" \xc2\xb7 ");
+        // support exchange, and the DAW rarely shows it anywhere. With an
+        // update pending the line goes accent and names it (and is clickable).
+        const juce::String mid = juce::String::fromUTF8(" \xc2\xb7 ");
+        const juce::String ver = "v" JucePlugin_VersionString
+            + (newer.isNotEmpty() ? mid + newer + " available - click to download" : juce::String())
+            + mid;
         g.drawText(ver + (serving ? "Serving on port " + juce::String(processor.server.getPort())
                                   : "Server failed to start (ports 17654-17663 busy?)"),
-                   58, 38, 400, 12, juce::Justification::centredLeft);
+                   subtitleRect().withY(38).withHeight(12), juce::Justification::centredLeft);
 
         // LIVE pill
         const int n = processor.server.getNumListeners();

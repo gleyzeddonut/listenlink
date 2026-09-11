@@ -114,10 +114,18 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseMove(const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
     void updateState();               // 2 Hz: text, visibility, layout of variable-width bits
+    // The header subtitle ("v0.7.2 · Serving on port N"). When a newer release
+    // exists it turns accent-coloured, names the version and is clickable —
+    // a second, larger target for the same action as the Update button.
+    static juce::Rectangle<int> subtitleRect() { return { 58, 36, 400, 16 }; }
+    bool updateAvailable() const { return UpdateChecker::getAvailableUpdate().isNotEmpty(); }
+    static void openDownloadPage();
     int tunnelState() const;          // 0 idle, 1 starting, 2 up
     int pillWidth() const;            // current width of the LIVE pill
 
