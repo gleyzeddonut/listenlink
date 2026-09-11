@@ -372,9 +372,12 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         const bool serving = processor.server.isServerRunning();
         g.setColour(ll::dim);
         g.setFont(ll::sans(11.0f));
-        g.drawText(serving ? "Serving on port " + juce::String(processor.server.getPort())
-                           : "Server failed to start (ports 17654-17663 busy?)",
-                   58, 38, 340, 12, juce::Justification::centredLeft);
+        // Version first: "which build is this?" is the first question in every
+        // support exchange, and the DAW rarely shows it anywhere.
+        const juce::String ver = "v" JucePlugin_VersionString + juce::String::fromUTF8(" \xc2\xb7 ");
+        g.drawText(ver + (serving ? "Serving on port " + juce::String(processor.server.getPort())
+                                  : "Server failed to start (ports 17654-17663 busy?)"),
+                   58, 38, 400, 12, juce::Justification::centredLeft);
 
         // LIVE pill
         const int n = processor.server.getNumListeners();
