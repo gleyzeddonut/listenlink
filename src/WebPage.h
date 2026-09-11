@@ -9,6 +9,7 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ListenLink</title>
+<meta name="ll-proxy" content="1">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ListenLink">
 <meta property="og:title" content="ListenLink">
@@ -160,8 +161,16 @@ const foot = document.getElementById('foot');
 
 let ctx = null, node = null, gain = null, ws = null;
 let running = false, live = false, muted = false;
+// Served through the link service (gggaudio.store/l/<id>), the page talks to
+// /l/<id>/ws on the SAME host and the Worker proxies to wherever the stream
+// currently lives, re-resolving on every connect. The browser never sees the
+// trycloudflare hostname - a brand-new one can be negative-cached as NXDOMAIN
+// for 30 minutes by a listener's resolver, which is the failure this avoids.
+// Loaded straight from the tunnel (or LAN), it behaves as before: /ws here.
+const viaLink = location.pathname.match(/^\/l\/([a-z0-9]{6,32})\/?$/);
 let wsHost = location.host, wsSecure = location.protocol === 'https:';
-let streamId = null, wsFails = 0;
+const wsPath = viaLink ? '/l/' + viaLink[1] + '/ws' : '/ws';
+let streamId = viaLink ? viaLink[1] : null, wsFails = 0;
 let streamRate = 48000;
 let codec = 'pcm', opusBitrate = 0, decoder = null, opusTime = 0, forcePcm = false;
 let listeners = 0;
@@ -416,6 +425,7 @@ async function initAudio() {
 // The stream moved (tunnel restarted): ask the link service where it lives
 // now, then reconnect there. Falls back to plain retries if it can't answer.
 function relocate() {
+  if (viaLink) { scheduleReconnect(retryDelay()); return; }   // the Worker re-resolves for us
   fetch('https://gggaudio.store/l/' + streamId + '/resolve', { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
@@ -426,6 +436,14 @@ function relocate() {
     })
     .catch(() => {})
     .finally(() => { scheduleReconnect(1500); });
+}
+
+// 2s for the first few tries, then doubling to a 30s ceiling. Through the link
+// service every attempt is a Worker request + KV read, and a tab left open on a
+// stopped stream would otherwise poll twice a second all day. visibilitychange
+// still reconnects immediately when the listener comes back to the tab.
+function retryDelay() {
+  return Math.min(30000, 2000 * Math.pow(2, Math.max(0, wsFails - 3)));
 }
 
 function scheduleReconnect(ms) {
@@ -443,7 +461,7 @@ function connect() {
     try { ws.close(); } catch(_){}
   }
   const proto = wsSecure ? 'wss://' : 'ws://';
-  ws = new WebSocket(proto + wsHost + '/ws' + (forcePcm ? '?fmt=pcm' : ''));
+  ws = new WebSocket(proto + wsHost + wsPath + (forcePcm ? '?fmt=pcm' : ''));
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { wsFails = 0; };
   ws.onmessage = async (e) => {
@@ -507,7 +525,7 @@ function connect() {
     renderWarn();
     wsFails++;
     if (wsFails >= 3 && streamId) { relocate(); return; }
-    scheduleReconnect(2000);
+    scheduleReconnect(retryDelay());
   };
   ws.onerror = () => { try { ws.close(); } catch(_){} };
 }

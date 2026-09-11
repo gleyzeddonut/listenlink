@@ -4,7 +4,20 @@
 //   POST /l/register        {id, token, url}  -> 204 | 403 (token mismatch)
 //   POST /l/unregister      {id, token}       -> 204 | 403
 //   GET  /l/<id>/resolve    -> {"url": "..."} | 404   (CORS: any origin)
-//   GET  /l/<id>            -> 302 to tunnel URL | offline page
+//   GET  /l/<id>/ping       -> 204 if the stream is reachable right now | 404
+//   GET  /l/<id>            -> listener page (fetched from the plugin through
+//                              the tunnel and served from THIS host) | offline page
+//   GET  /l/<id>/ws         -> WebSocket proxied to the tunnel's /ws
+//
+// Why serve + proxy instead of redirecting: every quick tunnel gets a brand-new
+// trycloudflare.com hostname, and a listener whose resolver asks for it before
+// Cloudflare has published it caches NXDOMAIN for up to 30 minutes (the zone's
+// SOA minimum TTL). Measured 2026-09-10: Quad9 stayed NXDOMAIN for the life of
+// a test tunnel while other resolvers had it within seconds. With the page and
+// the socket both on gggaudio.store the browser never resolves the tunnel host;
+// the hop to trycloudflare happens inside Cloudflare, which is authoritative for
+// that zone. The redirect path is kept only for plugins older than 0.7.0, whose
+// page does not know how to speak to /l/<id>/ws (detected by a meta marker).
 //
 // A mapping is claimed by whichever token first registers an id; later
 // updates must present the same token. Entries expire 7 days after the
@@ -37,14 +50,34 @@ const offlinePage = (id) => `<!doctype html>
 </div>
 <script>
 // The id is validated as [a-z0-9]{6,32} before this page is built.
+// /ping only answers 204 once the tunnel is actually reachable, so a stale
+// registration from a crashed DAW never turns this into a reload loop.
+var tries = 0;
 (function poll() {
-  fetch('/l/${id}/resolve', { cache: 'no-store' })
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(j){ if (j && j.url) location.replace(j.url); else setTimeout(poll, 2500); })
-    .catch(function(){ setTimeout(poll, 2500); });
+  var wait = ++tries < 24 ? 2500 : 10000;   // 2.5s for the first minute, then 10s
+  fetch('/l/${id}/ping', { cache: 'no-store' })
+    .then(function(r){ if (r.status === 204) location.reload(); else setTimeout(poll, wait); })
+    .catch(function(){ setTimeout(poll, wait); });
 })();
 </script>
 </body></html>`;
+
+// Fetch the listener page from the plugin through its tunnel. One quick retry
+// covers a tunnel that registered seconds ago and is still coming up.
+async function fetchPage(tunnelUrl) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(tunnelUrl + '/', {
+        redirect: 'manual', signal: AbortSignal.timeout(5000),
+        headers: { 'Accept': 'text/html' } });
+      if (r.status >= 200 && r.status < 400) return r;
+    } catch (_) {}
+    if (attempt === 0) await new Promise(res => setTimeout(res, 1500));
+  }
+  return null;
+}
+
+const NO_STORE_HTML = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
 
 async function readBody(request) {
   try { return await request.json(); } catch (_) { return null; }
@@ -104,30 +137,45 @@ export default {
                        'Cache-Control': 'no-store' } });
       }
 
-      // Probe the tunnel before redirecting: a crashed DAW never unregisters,
-      // and a dead trycloudflare host would show listeners a raw Cloudflare
-      // error instead of our offline page. Skip the probe for registrations
-      // under 2 minutes old — fresh trycloudflare hostnames can take up to a
-      // minute to resolve globally, so probing them reports false "offline"
-      // right when the producer first shares the link. A just-registered
-      // mapping means the plugin was alive seconds ago; trust it.
-      let alive = false;
-      if (entry) {
-        if (entry.t && Date.now() - entry.t < 120000) {
-          alive = true;
-        } else {
-          try {
-            const probe = await fetch(entry.url + '/', {
-              redirect: 'manual', signal: AbortSignal.timeout(4000) });
-            alive = probe.status >= 200 && probe.status < 400;
-          } catch (_) { alive = false; }
-        }
+      // GET /l/<id>/ping -> 204 only when the tunnel answers right now.
+      if (parts[2] === 'ping') {
+        const ok = entry && (await fetchPage(entry.url)) !== null;
+        return new Response(null, { status: ok ? 204 : 404,
+          headers: { ...CORS, 'Cache-Control': 'no-store' } });
       }
-      if (!alive)
-        return new Response(offlinePage(parts[1]),
-          { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8',
-                                    'Cache-Control': 'no-store' } });
-      return Response.redirect(entry.url, 302);
+
+      // GET /l/<id>/ws -> proxy the WebSocket to the tunnel. Returning the
+      // upstream 101 response as-is makes the edge pipe frames between the
+      // two sockets; no Worker code runs per message, so audio costs nothing
+      // here beyond the one request. The plugin's own 403 (sharing stopped)
+      // passes straight through to the page.
+      if (parts[2] === 'ws') {
+        if (request.headers.get('Upgrade') !== 'websocket')
+          return new Response('Expected WebSocket', { status: 426 });
+        if (!entry)
+          return new Response('Stream offline', { status: 404 });
+        const url = new URL(request.url);
+        return fetch(new Request(entry.url + '/ws' + url.search, request));
+      }
+
+      if (parts[2])
+        return new Response('Not found', { status: 404, headers: CORS });
+
+      // GET /l/<id> -> the listener page itself, served from this host.
+      // Fetching it through the tunnel doubles as the liveness probe: a crashed
+      // DAW never unregisters, and a dead trycloudflare host would otherwise
+      // show listeners a raw Cloudflare error instead of our offline page.
+      const page = entry ? await fetchPage(entry.url) : null;
+      if (!page)
+        return new Response(offlinePage(parts[1]), { status: 200, headers: NO_STORE_HTML });
+
+      const html = await page.text();
+      // Pages from plugins older than 0.7.0 only know how to reach /ws on the
+      // host they were loaded from - keep redirecting those to the tunnel.
+      if (!html.includes('name="ll-proxy"'))
+        return Response.redirect(entry.url, 302);
+
+      return new Response(html, { status: 200, headers: NO_STORE_HTML });
     }
 
     return new Response('Not found', { status: 404, headers: CORS });
