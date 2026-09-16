@@ -104,6 +104,71 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
                 margin-top:6px; flex:none; }
   .warn p { font-size:12.5px; line-height:1.45; color:#e0c880; text-wrap:pretty; }
 
+  /* ---- shared doc (opt-in; nothing loads until "Use doc" is clicked) ----
+     Closed: a single button under the player card. Open: the page becomes two
+     columns - the player column stays put on the left and the doc fills the
+     rest of the viewport at full height, like a document, scrolling inside
+     itself. Narrow screens stack the two, doc first in height. */
+  .docbtn { margin-top:12px; width:100%; padding:12px 14px; border-radius:14px;
+            border:1px solid #23232c; background:#16161c; color:#8a8a96;
+            cursor:pointer; font:inherit; font-size:13px; font-weight:500;
+            display:flex; align-items:center; justify-content:center; gap:9px;
+            transition:color 140ms ease, border-color 140ms ease; }
+  .docbtn:hover { color:#e8e8ec; border-color:#33333f; }
+  .docbtn[hidden] { display:none; }
+  .dico { width:11px; height:13px; border:1.5px solid currentColor; border-radius:2px;
+          position:relative; flex:none; }
+  .dico:before, .dico:after { content:""; position:absolute; left:2px; right:2px;
+          height:1.5px; background:currentColor; }
+  .dico:before { top:3px; }
+  .dico:after { top:6.5px; right:4px; }
+
+  /* The doc is viewport-height, so the page never scrolls on wide screens and
+     the player column can simply sit centred beside it. */
+  body.docmode { align-items:center; gap:20px; }
+  body.docmode .col { flex:none; }
+  .doc { display:none; flex-direction:column; flex:1 1 auto; width:100%;
+         max-width:900px; height:calc(100vh - 56px); min-height:420px;
+         background:#16161c; border:1px solid #23232c; border-radius:20px;
+         padding:20px 22px 18px; box-shadow:0 30px 60px -34px rgba(0,0,0,.85); }
+  .doc.open { display:flex; }
+  .dochdr { display:flex; align-items:center; justify-content:space-between;
+            margin-bottom:14px; padding:0 2px; flex:none; }
+  .doctitle { font-size:14px; font-weight:600; letter-spacing:.01em; }
+  .docstat { display:flex; align-items:center; gap:7px; font-size:9.5px;
+             letter-spacing:.16em; color:#6a6a76; }
+  .docstat .pdot { width:5px; height:5px; border-radius:50%; background:#4f4f5a; }
+  .docstat.on { color:#3ddc84; }
+  .docstat.on .pdot { background:#3ddc84; }
+  #docta { flex:1 1 auto; width:100%; min-height:0; resize:none; display:block;
+           background:#0c0c10; border:1px solid #23232c; border-radius:14px;
+           padding:26px 30px; color:#e8e8ec; font:inherit; font-size:16px;
+           line-height:1.7; outline:none; overflow:auto;
+           transition:border-color 140ms ease; }
+  #docta::placeholder { color:#4f4f5a; }
+  #docta:focus { border-color:#4f6bff; }
+  #docta:disabled { opacity:.5; }
+  .docbar { display:flex; gap:8px; margin-top:14px; flex:none; justify-content:flex-end; }
+  .docbar button { padding:10px 18px; border-radius:10px;
+                   border:1px solid #23232c; background:transparent; color:#8a8a96;
+                   font:inherit; font-size:12.5px; font-weight:500; cursor:pointer;
+                   white-space:nowrap; transition:color 140ms ease, border-color 140ms ease; }
+  .docbar button:hover { color:#e8e8ec; border-color:#33333f; }
+  .docbar button.primary { background:#4f6bff; border-color:#4f6bff; color:#fff; }
+  .docbar button.primary:hover { filter:brightness(1.08); }
+  .docbar button:disabled { opacity:.4; cursor:default; }
+  .dochint { margin-top:10px; padding:0 2px; font-size:11.5px; line-height:1.45;
+             color:#5c5c68; text-wrap:pretty; flex:none; }
+
+  @media (max-width: 860px) {
+    body.docmode { flex-direction:column; align-items:center; padding:20px 16px; }
+    body.docmode .col { width:min(400px, 100%); }
+    .doc { max-width:none; height:auto; min-height:calc(100vh - 40px); padding:16px 16px 14px; }
+    #docta { min-height:55vh; padding:18px 18px; font-size:15px; }
+    .docbar { justify-content:stretch; }
+    .docbar button { flex:1; min-width:0; padding:10px 8px; }
+  }
+
   /* ---- footer ---- */
   .foot { margin-top:16px; text-align:center; font-size:10px;
           letter-spacing:.14em; color:#5c5c68; text-transform:uppercase; }
@@ -144,7 +209,22 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
       <p>Your connection is struggling &mdash; audio may drop out while the buffer rebuilds.</p>
     </div>
   </div>
+  <button class="docbtn" id="docbtn" type="button"><span class="dico"></span><span id="docbtnText">Use doc</span></button>
   <div class="foot mono" id="foot">READY</div>
+</div>
+<div class="doc" id="doc">
+  <div class="dochdr">
+    <div class="doctitle">Shared doc</div>
+    <div class="docstat mono" id="docstat"><span class="pdot"></span><span id="docstatText">CONNECTING</span></div>
+  </div>
+  <textarea id="docta" spellcheck="false" disabled maxlength="200000"
+    placeholder="Paste lyrics, notes, anything. Everyone on this link sees edits live."></textarea>
+  <div class="docbar">
+    <button type="button" class="primary" id="docsave" disabled>Save as Word</button>
+    <button type="button" id="docsavetxt" disabled>Save as text</button>
+    <button type="button" id="dochide">Hide</button>
+  </div>
+  <p class="dochint" id="dochint">The doc lives only while the stream is running. Save a copy to keep it.</p>
 </div>
 <script>
 "use strict";
@@ -425,7 +505,7 @@ async function initAudio() {
 // The stream moved (tunnel restarted): ask the link service where it lives
 // now, then reconnect there. Falls back to plain retries if it can't answer.
 function relocate() {
-  if (viaLink) { scheduleReconnect(retryDelay()); return; }   // the Worker re-resolves for us
+  if (viaLink) { scheduleReconnect(retryDelay(wsFails)); return; }   // the Worker re-resolves for us
   fetch('https://gggaudio.store/l/' + streamId + '/resolve', { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
@@ -442,8 +522,19 @@ function relocate() {
 // service every attempt is a Worker request + KV read, and a tab left open on a
 // stopped stream would otherwise poll twice a second all day. visibilitychange
 // still reconnects immediately when the listener comes back to the tab.
-function retryDelay() {
-  return Math.min(30000, 2000 * Math.pow(2, Math.max(0, wsFails - 3)));
+function retryDelay(fails) {
+  return Math.min(30000, 2000 * Math.pow(2, Math.max(0, fails - 3)));
+}
+
+function wsUrl(query) {
+  return (wsSecure ? 'wss://' : 'ws://') + wsHost + wsPath + query;
+}
+
+// Drop a socket without letting its late events fire.
+function detachSocket(sock) {
+  if (!sock) return;
+  sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
+  try { sock.close(); } catch(_){}
 }
 
 function scheduleReconnect(ms) {
@@ -453,15 +544,11 @@ function scheduleReconnect(ms) {
 
 function connect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return;  // already connecting/open
-  if (ws) {
-    // Detach the old socket completely: a CLOSING socket's late onclose would
-    // otherwise mark the fresh connection as disconnected and double-schedule
-    // reconnects.
-    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-    try { ws.close(); } catch(_){}
-  }
-  const proto = wsSecure ? 'wss://' : 'ws://';
-  ws = new WebSocket(proto + wsHost + wsPath + (forcePcm ? '?fmt=pcm' : ''));
+  // Detach the old socket completely: a CLOSING socket's late onclose would
+  // otherwise mark the fresh connection as disconnected and double-schedule
+  // reconnects.
+  detachSocket(ws);
+  ws = new WebSocket(wsUrl(forcePcm ? '?fmt=pcm' : ''));
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { wsFails = 0; };
   ws.onmessage = async (e) => {
@@ -525,7 +612,7 @@ function connect() {
     renderWarn();
     wsFails++;
     if (wsFails >= 3 && streamId) { relocate(); return; }
-    scheduleReconnect(retryDelay());
+    scheduleReconnect(retryDelay(wsFails));
   };
   ws.onerror = () => { try { ws.close(); } catch(_){} };
 }
@@ -563,12 +650,295 @@ window.addEventListener('pagehide', stop);
 // Coming back from a locked screen or background tab: the context may be
 // suspended and reconnect timers throttled - kick both immediately.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !running) return;
+  if (document.visibilityState !== 'visible') return;
+  if (docOpened && (!docWs || docWs.readyState > WebSocket.OPEN)) {
+    clearTimeout(docTimer);
+    docConnect();
+  }
+  if (!running) return;
   resumeOutput();
   if (!ws || ws.readyState > WebSocket.OPEN) {
     clearTimeout(reconnectTimer);
     connect();
   }
+});
+
+// ---- shared doc ----
+// Opt-in collaborative notes. Nothing here runs until "Use doc" is clicked:
+// then Yjs (a CRDT, MIT) is imported from jsDelivr and a second socket opens
+// on /ws?doc=1. The plugin only relays Yjs updates between doc sockets and
+// replays them to newcomers; simultaneous edits merge on the clients. The doc
+// is never saved anywhere - it lives in the plugin while it runs - so the Save
+// buttons download a copy and leaving the page with unsaved text warns first.
+const YJS_URL = 'https://cdn.jsdelivr.net/npm/yjs@13.6.32/+esm';
+const docbtn = document.getElementById('docbtn');
+const docbtnText = document.getElementById('docbtnText');
+const docEl = document.getElementById('doc');
+const docta = document.getElementById('docta');
+const docstat = document.getElementById('docstat');
+const docstatText = document.getElementById('docstatText');
+const docsave = document.getElementById('docsave');
+const docsavetxt = document.getElementById('docsavetxt');
+const dochide = document.getElementById('dochide');
+const dochint = document.getElementById('dochint');
+const DOC_HINT = dochint.textContent;
+
+let Y = null, ydoc = null, ytext = null, docWs = null, docTimer = 0, docFails = 0;
+let docOpened = false, docSynced = false, docLoading = false, docError = false, docImportTries = 0;
+let docValue = '', docSavedValue = '';
+
+function b64enc(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000)
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64dec(str) {
+  const b = atob(str), u = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+  return u;
+}
+
+function docDirty() {
+  return docOpened && docValue.length > 0 && docValue !== docSavedValue;
+}
+
+function renderDoc() {
+  docstat.classList.toggle('on', docSynced);
+  docstatText.textContent = docSynced ? 'SYNCED' : docLoading ? 'LOADING' : docError ? 'FAILED' : 'CONNECTING';
+  docta.disabled = !docSynced;
+  const has = docValue.length > 0;
+  docsave.disabled = !has;
+  docsavetxt.disabled = !has;
+  docbtnText.textContent = docOpened ? 'Show doc' : 'Use doc';
+}
+
+function showDoc(show) {
+  docEl.classList.toggle('open', show);
+  document.body.classList.toggle('docmode', show);
+  docbtn.hidden = show;
+  // Stacked layout (phones): the doc sits below the player, so bring it up.
+  if (show && window.innerWidth <= 860) docEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (show && docSynced) docta.focus();
+}
+
+async function openDoc() {
+  showDoc(true);
+  if (docOpened || docLoading) return;
+  docLoading = true;
+  docError = false;
+  dochint.textContent = DOC_HINT;
+  renderDoc();
+  try {
+    // A failed module import is cached by the browser for the page's lifetime,
+    // so a retry needs a fresh URL (jsDelivr ignores the query string).
+    Y = await import(YJS_URL + (docImportTries ? '?retry=' + docImportTries : ''));
+    docImportTries++;
+  } catch (_) {
+    docImportTries++;
+    // Panel stays open so the message is actually visible; Hide then "Use doc"
+    // tries the import again.
+    docLoading = false;
+    docError = true;
+    dochint.textContent = 'Could not load the editor. Check your connection, then hide and try again.';
+    renderDoc();
+    return;
+  }
+  docLoading = false;
+  docOpened = true;
+  ydoc = new Y.Doc();
+  ytext = ydoc.getText('doc');
+  ydoc.on('update', (u, origin) => {
+    if (origin !== 'local') return;
+    // Anything the server misses here (dead TCP path, plugin reloaded) is
+    // caught up by the state-vector diff sent after the next replay.
+    if (docWs && docWs.readyState === WebSocket.OPEN)
+      docWs.send(JSON.stringify({ d: b64enc(u) }));
+  });
+  ytext.observe((ev, tr) => { if (tr.origin !== 'local') applyRemote(ev); });
+  renderDoc();
+  docConnect();
+}
+
+// Remote edit: splice each delta op into the textarea in place (setRangeText
+// keeps the native undo stack and scroll position, unlike assigning .value),
+// shifting the local caret/selection past whatever landed before it.
+function applyRemote(ev) {
+  let s = docta.selectionStart, e = docta.selectionEnd, i = 0;
+  for (const op of ev.delta) {
+    if (op.retain) {
+      i += op.retain;
+    } else if (op.insert) {
+      const text = typeof op.insert === 'string' ? op.insert : ' ';
+      docta.setRangeText(text, i, i, 'preserve');
+      if (i < s) s += text.length;
+      if (i < e) e += text.length;
+      i += text.length;
+    } else if (op.delete) {
+      docta.setRangeText('', i, i + op.delete, 'preserve');
+      s -= Math.min(op.delete, Math.max(0, s - i));
+      e -= Math.min(op.delete, Math.max(0, e - i));
+    }
+  }
+  docValue = ytext.toString();
+  if (docta.value !== docValue) docta.value = docValue;   // belt and braces
+  if (document.activeElement === docta) docta.setSelectionRange(s, e);
+  renderDoc();
+}
+
+// Local edit: diff old vs new text (common prefix/suffix) into one Yjs
+// transaction. Indexes are UTF-16 units on both sides, so they line up.
+docta.addEventListener('input', () => {
+  if (!ytext) return;
+  const nv = docta.value, ov = docValue;
+  const maxp = Math.min(ov.length, nv.length);
+  let p = 0;
+  while (p < maxp && ov.charCodeAt(p) === nv.charCodeAt(p)) p++;
+  let sfx = 0;
+  const maxs = maxp - p;
+  while (sfx < maxs && ov.charCodeAt(ov.length - 1 - sfx) === nv.charCodeAt(nv.length - 1 - sfx)) sfx++;
+  ydoc.transact(() => {
+    const del = ov.length - p - sfx;
+    if (del > 0) ytext.delete(p, del);
+    const ins = nv.slice(p, nv.length - sfx);
+    if (ins.length) ytext.insert(p, ins);
+  }, 'local');
+  docValue = nv;
+  renderDoc();
+});
+
+function docConnect() {
+  if (!docOpened) return;
+  detachSocket(docWs);
+  docSynced = false;
+  renderDoc();
+  docWs = new WebSocket(wsUrl('?doc=1'));
+  docWs.onopen = () => { docFails = 0; };
+  docWs.onmessage = (e) => {
+    if (typeof e.data !== 'string') return;
+    let msg;
+    try { msg = JSON.parse(e.data); } catch(_) { return; }
+    if (Array.isArray(msg.doc)) {
+      // Whole log for a (re)joining client. Merging first means one textarea
+      // rewrite instead of one per keystroke ever typed. A bad entry must
+      // never wedge the doc: fall back to applying one by one, skipping it.
+      let merged = null;
+      try {
+        if (msg.doc.length) merged = Y.mergeUpdates(msg.doc.map(b64dec));
+        if (merged) Y.applyUpdate(ydoc, merged, 'remote');
+      } catch (_) {
+        merged = null;
+        for (const u of msg.doc) { try { Y.applyUpdate(ydoc, b64dec(u), 'remote'); } catch (__) {} }
+      }
+      // Two-way resync: send whatever this client has that the server's log
+      // does not (typed during a dead connection, or the plugin was reloaded).
+      let diff = null;
+      try {
+        const sv = merged ? Y.encodeStateVectorFromUpdate(merged) : Y.encodeStateVector(new Y.Doc());
+        diff = Y.encodeStateAsUpdate(ydoc, sv);
+      } catch (_) { diff = null; }
+      if (diff && diff.length > 2) docWs.send(JSON.stringify({ d: b64enc(diff) }));
+      docSynced = true;
+      dochint.textContent = DOC_HINT;
+      renderDoc();
+      if (docEl.classList.contains('open')) docta.focus();
+      return;
+    }
+    if (typeof msg.d === 'string') { try { Y.applyUpdate(ydoc, b64dec(msg.d), 'remote'); } catch (_) {} return; }
+    if (msg.snapreq) docWs.send(JSON.stringify({ snap: b64enc(Y.encodeStateAsUpdate(ydoc)) }));
+  };
+  docWs.onclose = () => {
+    docSynced = false;
+    docFails++;
+    if (docFails >= 2) dochint.textContent = 'The stream is offline, so the doc is paused. It reconnects on its own.';
+    renderDoc();
+    clearTimeout(docTimer);
+    docTimer = setTimeout(docConnect, retryDelay(docFails));
+  };
+  docWs.onerror = () => { try { docWs.close(); } catch(_){} };
+}
+
+// ---- export: plain text, or a minimal .docx (a stored zip of three XML parts) ----
+function downloadBlob(name, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function docFileName(ext) {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return 'listenlink-doc-' + d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + ext;
+}
+function crc32(u8) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < u8.length; i++) {
+    let c = (crc ^ u8[i]) & 0xff;
+    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
+    crc = (crc >>> 8) ^ c;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function zipStored(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  const u16 = v => [v & 255, (v >> 8) & 255];
+  const u32 = v => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255];
+  const dosDate = ((new Date().getFullYear() - 1980) << 9) | ((new Date().getMonth() + 1) << 5) | new Date().getDate();
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data), n = data.length;
+    const local = new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(0), ...u16(dosDate), ...u32(crc), ...u32(n), ...u32(n), ...u16(name.length), ...u16(0), ...name]);
+    central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(0), ...u16(dosDate), ...u32(crc), ...u32(n), ...u32(n), ...u16(name.length), ...u16(0),
+      ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...name]));
+    parts.push(local, data);
+    offset += local.length + n;
+  }
+  const cdSize = central.reduce((a, c) => a + c.length, 0);
+  const eocd = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length),
+    ...u16(files.length), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+  return new Blob([...parts, ...central, eocd],
+    { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+function makeDocx(text) {
+  const esc = t => t.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const paras = text.replace(/\r\n?/g, '\n').split('\n')
+    .map(l => '<w:p><w:r><w:t xml:space="preserve">' + esc(l) + '</w:t></w:r></w:p>').join('');
+  const xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  return zipStored([
+    { name: '[Content_Types].xml', text: xml +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      '</Types>' },
+    { name: '_rels/.rels', text: xml +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      '</Relationships>' },
+    { name: 'word/document.xml', text: xml +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+      paras + '<w:sectPr/></w:body></w:document>' }
+  ]);
+}
+
+docbtn.addEventListener('click', openDoc);
+dochide.addEventListener('click', () => showDoc(false));
+docsavetxt.addEventListener('click', () => {
+  downloadBlob(docFileName('.txt'), new Blob([docValue], { type: 'text/plain' }));
+  docSavedValue = docValue;
+});
+docsave.addEventListener('click', () => {
+  downloadBlob(docFileName('.docx'), makeDocx(docValue));
+  docSavedValue = docValue;
+});
+window.addEventListener('beforeunload', (e) => {
+  if (!docDirty()) return;
+  e.preventDefault();
+  e.returnValue = '';   // browsers show their own "leave site?" prompt
 });
 </script>
 </body>
