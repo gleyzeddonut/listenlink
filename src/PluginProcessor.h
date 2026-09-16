@@ -38,6 +38,8 @@ class TunnelManager : private juce::Thread
 {
 public:
     TunnelManager() : juce::Thread("ListenLink tunnel") {}
+
+    static constexpr uint32_t kFreshTunnelHoldMs = 5000;
     ~TunnelManager() override { stopTunnel(); }
 
     void setIdentity(const StreamIdentity& ident)
@@ -291,6 +293,7 @@ private:
             char buf[2048];
             bool urlFound = false;   // NOT getPublicUrl().isEmpty() — that now
                                      // holds the short link before the scrape
+            uint32_t urlFoundAt = 0; // ms tick of the scrape (see the hold below)
 
             while (! threadShouldExit() && proc.isRunning())
             {
@@ -311,6 +314,7 @@ private:
                             {
                                 const auto scraped = collected.substring(start, end) + ".trycloudflare.com";
                                 urlFound = true;
+                                urlFoundAt = juce::Time::getMillisecondCounter();
                                 attempt = 0;   // healthy again: future drops back off from scratch
                                 {
                                     const juce::ScopedLock sl(lock);
@@ -346,7 +350,20 @@ private:
                 // Registration is decoupled from the scrape: activate() can
                 // request it any time after warm-up, and a re-scrape while
                 // sharing (tunnel healed) re-requests it.
-                if (urlFound && active.load() && needsRegister.exchange(false))
+                //
+                // Hold a brand-new tunnel back for a few seconds first. Measured
+                // 2026-09-15: if the Worker probes a quick tunnel in its first
+                // ~3 s (before Cloudflare has published the hostname; public
+                // resolvers see it at ~+4 s), the edge keeps failing to reach
+                // that tunnel for ~95-100 s, so listeners who open the link
+                // right after a cold Create sit on the offline page for over a
+                // minute. Registering at >= 5 s of age made the page flip ~2 s
+                // after registration in every trial. Warm tunnels (pre-warmed
+                // when the editor opened) are past the hold already, so the
+                // instant path is unchanged for them.
+                const bool tunnelSettled = urlFound
+                    && juce::Time::getMillisecondCounter() - urlFoundAt >= kFreshTunnelHoldMs;
+                if (tunnelSettled && active.load() && needsRegister.exchange(false))
                 {
                     juce::String u;
                     {
