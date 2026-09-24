@@ -120,10 +120,14 @@ public:
 private:
     void timerCallback() override;
     void updateState();               // 2 Hz: text, visibility, layout of variable-width bits
-    // The header subtitle ("v0.7.2 · Serving on port N"). When a newer release
-    // exists it turns accent-coloured, names the version and is clickable —
-    // a second, larger target for the same action as the Update button.
-    static juce::Rectangle<int> subtitleRect() { return { 58, 36, 400, 16 }; }
+    // The header subtitle: "v0.7.2 · Serving on port N". When a newer release
+    // exists the leading part becomes "v0.7.2 · v0.8.0 available" in accent
+    // and is clickable (a second target for the Update button); the rest stays
+    // dim. The line always ends before the Update button / LIVE pill — the
+    // tail is drawn only when it fits whole, never underneath them.
+    juce::Rectangle<int> subtitleRect() const;      // full line, clipped to the free space
+    juce::String subtitleHead() const;              // version (+ pending update)
+    juce::Rectangle<int> subtitleLinkRect() const;  // the clickable head only
     bool updateAvailable() const { return UpdateChecker::getAvailableUpdate().isNotEmpty(); }
     static void openDownloadPage();
     int tunnelState() const;          // 0 idle, 1 starting, 2 up

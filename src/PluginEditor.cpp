@@ -345,15 +345,36 @@ void ListenLinkEditor::openDownloadPage()
     }
 }
 
+juce::Rectangle<int> ListenLinkEditor::subtitleRect() const
+{
+    // Stop 12 px short of whatever sits to the right in the header.
+    const int right = updateButton.isVisible() ? updateButton.getX() - 12 : 540 - pillWidth() - 12;
+    return { 58, 36, juce::jmax(0, right - 58), 16 };
+}
+
+juce::String ListenLinkEditor::subtitleHead() const
+{
+    const auto newer = UpdateChecker::getAvailableUpdate();
+    const juce::String mid = juce::String::fromUTF8(" \xc2\xb7 ");
+    return "v" JucePlugin_VersionString + (newer.isNotEmpty() ? mid + newer + " available" : juce::String());
+}
+
+juce::Rectangle<int> ListenLinkEditor::subtitleLinkRect() const
+{
+    const auto r = subtitleRect();
+    const int w = (int) std::ceil(ll::textWidth(ll::sans(11.0f), subtitleHead()));
+    return r.withWidth(juce::jmin(w, r.getWidth()));
+}
+
 void ListenLinkEditor::mouseDown(const juce::MouseEvent& e)
 {
-    if (updateAvailable() && subtitleRect().contains(e.getPosition()))
+    if (updateAvailable() && subtitleLinkRect().contains(e.getPosition()))
         openDownloadPage();
 }
 
 void ListenLinkEditor::mouseMove(const juce::MouseEvent& e)
 {
-    setMouseCursor(updateAvailable() && subtitleRect().contains(e.getPosition())
+    setMouseCursor(updateAvailable() && subtitleLinkRect().contains(e.getPosition())
                        ? juce::MouseCursor::PointingHandCursor
                        : juce::MouseCursor::NormalCursor);
 }
@@ -394,18 +415,27 @@ void ListenLinkEditor::paint(juce::Graphics& g)
 
         const bool serving = processor.server.isServerRunning();
         const auto newer = UpdateChecker::getAvailableUpdate();
-        g.setColour(newer.isNotEmpty() ? ll::accent : ll::dim);
         g.setFont(ll::sans(11.0f));
         // Version first: "which build is this?" is the first question in every
         // support exchange, and the DAW rarely shows it anywhere. With an
-        // update pending the line goes accent and names it (and is clickable).
+        // update pending the head goes accent and names it (and is clickable);
+        // the serving info follows in dim and is dropped if it would run into
+        // the Update button.
         const juce::String mid = juce::String::fromUTF8(" \xc2\xb7 ");
-        const juce::String ver = "v" JucePlugin_VersionString
-            + (newer.isNotEmpty() ? mid + newer + " available - click to download" : juce::String())
-            + mid;
-        g.drawText(ver + (serving ? "Serving on port " + juce::String(processor.server.getPort())
-                                  : "Server failed to start (ports 17654-17663 busy?)"),
-                   subtitleRect().withY(38).withHeight(12), juce::Justification::centredLeft);
+        const auto line = subtitleRect().withY(38).withHeight(12);
+        const auto head = subtitleLinkRect().withY(38).withHeight(12);
+        g.setColour(newer.isNotEmpty() ? ll::accent : ll::dim);
+        g.drawText(subtitleHead(), head, juce::Justification::centredLeft);
+        // Only whole: "Serving on p..." next to an Update button reads worse than
+        // no port at all (the LIVE/OFF pill still says whether the server is up).
+        const auto rest = line.withTrimmedLeft(head.getWidth());
+        const juce::String tail = mid + (serving ? "Serving on port " + juce::String(processor.server.getPort())
+                                                 : "Server failed to start (ports 17654-17663 busy?)");
+        if (rest.getWidth() >= (int) std::ceil(ll::textWidth(ll::sans(11.0f), tail)))
+        {
+            g.setColour(ll::dim);
+            g.drawText(tail, rest, juce::Justification::centredLeft);
+        }
 
         // LIVE pill
         const int n = processor.server.getNumListeners();
