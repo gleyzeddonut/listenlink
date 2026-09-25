@@ -1,0 +1,9 @@
+# Copy to google-client.cmake (git-ignored) and fill in the OAuth client made
+# in Google Cloud Console -> APIs & Services -> Credentials -> Create
+# credentials -> OAuth client ID -> Application type "Desktop app".
+# The consent screen needs the Google Drive API enabled and these scopes:
+#   https://www.googleapis.com/auth/drive.file, openid, email
+# Publish the consent screen ("In production") - while it is in "Testing",
+# Google expires every sign-in after 7 days.
+set(LL_GOOGLE_CLIENT_ID "xxxxxxxx.apps.googleusercontent.com")
+set(LL_GOOGLE_CLIENT_SECRET "GOCSPX-xxxxxxxx")

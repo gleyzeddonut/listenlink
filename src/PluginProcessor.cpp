@@ -12,6 +12,12 @@ ListenLinkProcessor::ListenLinkProcessor()
 
     interleaved.resize(8192 * 2);
     identity = StreamIdentity::generate();   // replaced by the saved one if the host restores state
+
+    // Google sign-in lands on our own server (loopback redirect).
+    server.oauthCallback = [](const juce::String& target, juce::String& html)
+    {
+        return GoogleDocs::get().handleOAuthCallback(target, html);
+    };
     tunnel.setIdentity(identity);
     server.setStreamId(identity.id);
     server.startServer();

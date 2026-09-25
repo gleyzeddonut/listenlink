@@ -9,16 +9,6 @@ static constexpr int kLastPort  = 17663;
 static constexpr int kOpusRate  = 48000;
 static constexpr int kOpusFrame = 960;   // 20 ms @ 48 kHz
 
-// Inbound WebSocket limits. A doc snapshot of even a very long lyric sheet is
-// well under 1 MB of base64; anything bigger is not a browser we want to talk to.
-static constexpr size_t kMaxInboundMessage = 2u << 20;   // one message (after reassembly)
-static constexpr size_t kMaxInboundBuffer  = 4u << 20;   // unparsed bytes per client
-static constexpr size_t kMaxDrainPerTick   = 256u << 10; // bytes read per client per 10 ms tick
-static constexpr size_t kMaxDocEntry       = 1u << 20;   // one base64 update or snapshot
-static constexpr size_t kMaxOutBacklog     = 1u << 20;   // unsent bytes before a doc socket is dropped
-static constexpr size_t kDocCompactBytes   = 96u << 10;  // first compaction threshold
-static constexpr uint32_t kDocSnapTimeoutMs = 15000;
-
 // All encoding state lives on the broadcast thread.
 struct StreamServer::OpusState
 {
@@ -94,11 +84,7 @@ void StreamServer::stopServer()
 int StreamServer::getNumListeners() const
 {
     const juce::ScopedLock sl(clientsLock);
-    int n = 0;
-    for (auto& c : clients)
-        if (! c->docOnly)
-            ++n;
-    return n;
+    return (int) clients.size();
 }
 
 void StreamServer::pushAudio(const float* data, int numFrames)
@@ -193,8 +179,6 @@ void StreamServer::handleConnection(std::unique_ptr<juce::StreamingSocket> sock)
         auto client = std::make_unique<Client>();
         client->sock = std::move(sock);
         client->wantsPcm = target.contains("fmt=pcm");
-        client->docOnly = target.contains("doc=1");
-        client->id = nextClientId++;
         // helloRate/helloMode stay unset; the broadcast loop sends the hello
         // (with the right codec for this client) on its next tick.
 
@@ -203,11 +187,32 @@ void StreamServer::handleConnection(std::unique_ptr<juce::StreamingSocket> sock)
         return;
     }
 
+    if (path == "/oauth/callback")
+    {
+        juce::String html;
+        int status = 404;
+        if (oauthCallback)
+            status = oauthCallback(target, html);
+        if (html.isEmpty())
+            html = "Not found";
+        const juce::String reason = status == 200 ? "OK" : status == 400 ? "Bad Request" : "Not Found";
+        const auto response =
+            "HTTP/1.1 " + juce::String(status) + " " + reason + "\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "Content-Length: " + juce::String((int) html.getNumBytesAsUTF8()) + "\r\n"
+            "Cache-Control: no-store\r\n"
+            "Connection: close\r\n\r\n" + html;
+        sock->write(response.toRawUTF8(), (int) response.getNumBytesAsUTF8());
+        return;
+    }
+
     if (path == "/" || path == "/index.html")
     {
         // fromUTF8, not the char* constructor: that one reads bytes as Latin-1
         // and would double-encode any non-ASCII in the page on the way out.
-        const auto body = juce::String::fromUTF8(kListenerPage);
+        // The notes link is baked in so the button shows before play.
+        const auto body = juce::String::fromUTF8(kListenerPage)
+                              .replace("__LL_NOTES__", jsonEscape(getNotesUrl()));
         const auto response =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/html; charset=utf-8\r\n"
@@ -256,7 +261,6 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
             const juce::ScopedLock sl(clientsLock);
             for (auto& c : clients)
             {
-                if (c->docOnly) continue;
                 if (c->wantsPcm) needPcm = true;
                 else if (mode != 0) needOpus = true;
             }
@@ -280,16 +284,19 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
         else if (opusState != nullptr)
             opusState->clearBuffers();   // don't hold stale audio across a mode switch
 
+        // Notes link changed (attached / swapped / detached): tell everyone.
+        std::vector<uint8_t> notesFrame;
+        if (const int nv = notesVersion.load(); nv != lastNotesVersion)
+        {
+            lastNotesVersion = nv;
+            notesFrame = buildNotesFrame();
+        }
+
         const juce::ScopedLock sl(clientsLock);
         for (auto& c : clients)
         {
-            if (c->docOnly)
-            {
-                if (! c->docSynced)
-                    sendDocLog(*c);
-                serviceClient(*c);
-                continue;
-            }
+            if (! notesFrame.empty())
+                c->outbuf.insert(c->outbuf.end(), notesFrame.begin(), notesFrame.end());
 
             const bool pcmClient = (mode == 0) || c->wantsPcm;
             const double clientRate = pcmClient ? srcRate : (double) kOpusRate;
@@ -321,22 +328,12 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
             serviceClient(*c);
         }
 
-        // The client asked for a doc snapshot left before answering: stop
-        // waiting on it so the next update can ask someone else.
-        for (auto& c : clients)
-            if (c->dead && docSnapRequestedAt != 0 && c->id == docSnapClientId)
-                docSnapRequestedAt = 0;
-
         clients.erase(std::remove_if(clients.begin(), clients.end(),
                                      [](const std::unique_ptr<Client>& c) { return c->dead; }),
                       clients.end());
 
         // Tell everyone how many listeners there are whenever the count changes.
-        // Doc-only sockets are not listeners (the same person may hold both).
-        int count = 0;
-        for (auto& c : clients)
-            if (! c->docOnly)
-                ++count;
+        const int count = (int) clients.size();
         if (count != lastListenerCount)
         {
             lastListenerCount = count;
@@ -425,35 +422,16 @@ void StreamServer::encodeOpus(const std::vector<float>& interleavedIn, double sr
 
 void StreamServer::serviceClient(Client& c)
 {
-    // Drain whatever the socket has and parse it: close frames from anyone,
-    // doc messages from doc clients. Audio clients otherwise never send.
-    // Bounded per tick: this runs on the audio broadcast thread, so one chatty
-    // doc socket must not delay the audio clients behind it in the list.
-    size_t drained = 0;
-    while (drained < kMaxDrainPerTick && c.sock->waitUntilReady(true, 0) == 1)
+    // Detect disconnects / close frames (we don't need the payload).
+    if (c.sock->waitUntilReady(true, 0) == 1)
     {
-        uint8_t buf[4096];
+        char buf[512];
         const int n = c.sock->read(buf, (int) sizeof(buf), false);
-        if (n <= 0)
+        if (n <= 0 || (n > 0 && (buf[0] & 0x0f) == 0x08))
         {
             c.dead = true;
             return;
         }
-        c.inbuf.insert(c.inbuf.end(), buf, buf + n);
-        drained += (size_t) n;
-        if (c.inbuf.size() > kMaxInboundBuffer)
-        {
-            c.dead = true;
-            return;
-        }
-        if (n < (int) sizeof(buf))
-            break;
-    }
-
-    if (! c.inbuf.empty() && ! parseInbound(c))
-    {
-        c.dead = true;
-        return;
     }
 
     // Flush as much as the socket will take without blocking.
@@ -482,246 +460,6 @@ void StreamServer::serviceClient(Client& c)
     {
         c.outbuf.erase(c.outbuf.begin(), c.outbuf.begin() + (long) c.outPos);
         c.outPos = 0;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// inbound frames (RFC 6455): client frames are always masked
-
-bool StreamServer::parseInbound(Client& c)
-{
-    size_t pos = 0;
-    auto& in = c.inbuf;
-
-    while (true)
-    {
-        const size_t avail = in.size() - pos;
-        if (avail < 2)
-            break;
-
-        const uint8_t b0 = in[pos], b1 = in[pos + 1];
-        const bool fin = (b0 & 0x80) != 0;
-        const uint8_t opcode = b0 & 0x0f;
-        const bool masked = (b1 & 0x80) != 0;
-        uint64_t len = b1 & 0x7f;
-        size_t hdr = 2;
-
-        if (len == 126)
-        {
-            if (avail < 4) break;
-            len = ((uint64_t) in[pos + 2] << 8) | in[pos + 3];
-            hdr = 4;
-        }
-        else if (len == 127)
-        {
-            if (avail < 10) break;
-            len = 0;
-            for (int i = 0; i < 8; ++i)
-                len = (len << 8) | in[pos + 2 + (size_t) i];
-            hdr = 10;
-        }
-
-        if (! masked || len > kMaxInboundMessage)
-            return false;
-        if (avail < hdr + 4 + len)
-            break;   // wait for the rest of the frame
-
-        const uint8_t mask[4] = { in[pos + hdr], in[pos + hdr + 1], in[pos + hdr + 2], in[pos + hdr + 3] };
-        uint8_t* data = &c.inbuf[pos + hdr + 4];
-        for (size_t i = 0; i < (size_t) len; ++i)
-            data[i] ^= mask[i & 3];
-        std::vector<uint8_t> payload(data, data + (size_t) len);
-        pos += hdr + 4 + (size_t) len;
-
-        switch (opcode)
-        {
-            case 0x08:   // close
-                return false;
-
-            case 0x09:   // ping -> pong with the same payload
-            {
-                queueFrame(c, buildWsFrame(0x0A, payload.data(), payload.size()));
-                break;
-            }
-
-            case 0x0A:   // pong
-                break;
-
-            case 0x00:   // continuation
-                if (c.fragOpcode == 0)
-                    return false;
-                c.fragBuf.insert(c.fragBuf.end(), payload.begin(), payload.end());
-                if (c.fragBuf.size() > kMaxInboundMessage)
-                    return false;
-                if (fin)
-                {
-                    handleClientMessage(c, c.fragOpcode, c.fragBuf);
-                    c.fragBuf.clear();
-                    c.fragOpcode = 0;
-                }
-                break;
-
-            case 0x01:   // text
-            case 0x02:   // binary
-                if (! fin)
-                {
-                    c.fragOpcode = opcode;
-                    c.fragBuf = std::move(payload);
-                }
-                else
-                {
-                    handleClientMessage(c, opcode, payload);
-                }
-                break;
-
-            default:
-                return false;
-        }
-    }
-
-    c.inbuf.erase(c.inbuf.begin(), c.inbuf.begin() + (long) pos);
-    return true;
-}
-
-void StreamServer::handleClientMessage(Client& c, uint8_t opcode, const std::vector<uint8_t>& payload)
-{
-    if (! c.docOnly || opcode != 0x01 || payload.empty())
-        return;   // audio sockets have nothing to say; binary is not part of the protocol
-    handleDocMessage(c, juce::String::fromUTF8((const char*) payload.data(), (int) payload.size()));
-}
-
-// ---------------------------------------------------------------------------
-// shared doc relay (broadcast thread only)
-
-// Strict enough that the client's atob() can never throw on a replayed entry:
-// non-empty, length a multiple of 4, '=' padding only at the very end.
-static bool isStrictBase64(const juce::String& s)
-{
-    const auto n = s.getNumBytesAsUTF8();
-    if (n == 0 || (n % 4) != 0)
-        return false;
-    const char* p = s.toRawUTF8();
-    size_t pad = 0;
-    for (size_t i = 0; i < n; ++i)
-    {
-        const char ch = p[i];
-        if (ch == '=')
-        {
-            if (++pad > 2 || i < n - 2) return false;
-        }
-        else if (pad != 0 || ! ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-                                 || (ch >= '0' && ch <= '9') || ch == '+' || ch == '/'))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-void StreamServer::queueFrame(Client& c, const std::vector<uint8_t>& frame)
-{
-    // A doc socket that stops draining (backgrounded phone tab, dead TCP path)
-    // is dropped rather than buffered without bound; it replays on reconnect.
-    if (c.docOnly && c.outbuf.size() - c.outPos + frame.size() > kMaxOutBacklog)
-    {
-        c.dead = true;
-        return;
-    }
-    c.outbuf.insert(c.outbuf.end(), frame.begin(), frame.end());
-}
-
-void StreamServer::queueText(Client& c, const juce::String& json)
-{
-    queueFrame(c, buildWsFrame(0x01, json.toRawUTF8(), json.getNumBytesAsUTF8()));
-}
-
-void StreamServer::sendDocLog(Client& c)
-{
-    c.docSynced = true;
-    if (docReplayFrame.empty())
-    {
-        juce::String json;
-        json.preallocateBytes(docLogBytes + docLog.size() * 3 + 16);
-        json << "{\"doc\":[";
-        for (size_t i = 0; i < docLog.size(); ++i)
-            json << (i == 0 ? "\"" : ",\"") << docLog[i] << "\"";
-        json << "]}";
-        docReplayFrame = buildWsFrame(0x01, json.toRawUTF8(), json.getNumBytesAsUTF8());
-    }
-    queueFrame(c, docReplayFrame);
-}
-
-void StreamServer::handleDocMessage(Client& from, const juce::String& text)
-{
-    const auto v = juce::JSON::parse(text);
-    auto* obj = v.getDynamicObject();
-    if (obj == nullptr)
-        return;
-
-    const auto now = juce::Time::getMillisecondCounter();
-    if (docSnapRequestedAt != 0 && now - docSnapRequestedAt > kDocSnapTimeoutMs)
-        docSnapRequestedAt = 0;   // asked client went away; allow another request
-
-    if (obj->hasProperty("d"))
-    {
-        const auto& dv = v["d"];
-        if (! dv.isString())
-            return;
-        const auto u = dv.toString();
-        if (u.getNumBytesAsUTF8() > kMaxDocEntry || ! isStrictBase64(u))
-            return;
-
-        docLog.push_back(u);
-        docLogBytes += (size_t) u.length();
-        docReplayFrame.clear();
-
-        // The base64 alphabet needs no JSON escaping, so build the relay by hand.
-        const auto relayJson = "{\"d\":\"" + u + "\"}";
-        const auto relay = buildWsFrame(0x01, relayJson.toRawUTF8(), relayJson.getNumBytesAsUTF8());
-        for (auto& c : clients)
-            if (c->docOnly && c->docSynced && c.get() != &from && ! c->dead)
-                queueFrame(*c, relay);
-
-        if (docCompactAt == 0)
-            docCompactAt = kDocCompactBytes;
-        if (docLogBytes > docCompactAt && docSnapRequestedAt == 0)
-        {
-            docSnapRequestedAt = now;
-            docSnapClientId = from.id;
-            docSnapMark = docLog.size();
-            queueText(from, "{\"snapreq\":1}");
-        }
-        return;
-    }
-
-    if (obj->hasProperty("snap"))
-    {
-        // Only the client we asked, and only for the outstanding request: a
-        // late snapshot from an earlier request would be missing everything
-        // logged since its mark.
-        if (docSnapRequestedAt == 0 || from.id != docSnapClientId)
-            return;
-        const auto& sv = v["snap"];
-        if (! sv.isString())
-            return;
-        const auto snap = sv.toString();
-        if (snap.getNumBytesAsUTF8() > kMaxDocEntry || ! isStrictBase64(snap))
-            return;
-
-        std::vector<juce::String> fresh;
-        const auto mark = juce::jmin(docSnapMark, docLog.size());
-        fresh.reserve(1 + docLog.size() - mark);
-        fresh.push_back(snap);
-        fresh.insert(fresh.end(), docLog.begin() + (long) mark, docLog.end());
-        docLog.swap(fresh);
-        docLogBytes = 0;
-        for (const auto& e : docLog)
-            docLogBytes += (size_t) e.length();
-        docReplayFrame.clear();
-        docSnapRequestedAt = 0;
-        // Next compaction once the log has doubled again, so a large document
-        // does not trigger a full snapshot round-trip on every keystroke.
-        docCompactAt = juce::jmax(kDocCompactBytes, docLogBytes * 2);
     }
 }
 
@@ -767,11 +505,28 @@ juce::String StreamServer::makeAcceptKey(const juce::String& clientKey)
     return out.toString();
 }
 
+juce::String StreamServer::jsonEscape(const juce::String& s)
+{
+    // Enough for URLs and short strings inside a JSON string literal that
+    // also sits inside a <script> block (hence the escaped '<').
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("<", "\\u003c")
+            .replace("\n", "\\n").replace("\r", "\\r");
+}
+
+std::vector<uint8_t> StreamServer::buildNotesFrame() const
+{
+    const auto json = "{\"notes\":\"" + jsonEscape(getNotesUrl()) + "\"}";
+    return buildWsFrame(0x01, json.toRawUTF8(), json.getNumBytesAsUTF8());
+}
+
 std::vector<uint8_t> StreamServer::buildHelloFrame(double rate, int mode) const
 {
     const auto id = getStreamId();
-    const auto idField = id.isEmpty() ? juce::String()
-                                      : ",\"streamId\":\"" + id + "\"";
+    const auto notes = getNotesUrl();
+    const auto idField = (id.isEmpty() ? juce::String()
+                                       : ",\"streamId\":\"" + id + "\"")
+                       + (notes.isEmpty() ? juce::String()
+                                          : ",\"notes\":\"" + jsonEscape(notes) + "\"");
     juce::String json;
     if (mode == 0)
         json = "{\"codec\":\"pcm\",\"sampleRate\":" + juce::String((int) rate)

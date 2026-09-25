@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "StreamServer.h"
+#include "GoogleDocs.h"
 
 // Stream identity for the link service at gggaudio.store/l/. The id becomes
 // the shareable short link; the token proves ownership when re-registering a
@@ -557,6 +558,11 @@ public:
         out.writeInt(qualityParam->getIndex());
         out.writeString(identity.id);
         out.writeString(identity.token);
+        // Session notes doc (0.9.0+). Older builds stop reading before this.
+        const auto d = getNotesDoc();
+        out.writeString(d.id);
+        out.writeString(d.name);
+        out.writeString(d.url);
     }
 
     void setStateInformation(const void* data, int sizeInBytes) override
@@ -576,7 +582,30 @@ public:
                 tunnel.setIdentity(identity);
                 server.setStreamId(identity.id);
             }
+
+            // Notes doc: absent in saves before 0.9.0 (reads come back empty).
+            NotesDoc d { in.readString(), in.readString(), in.readString(), {} };
+            if (d.isValid() && d.url.startsWith("https://docs.google.com/document/d/"))
+                setNotesDoc(d);
         }
+    }
+
+    // The Google Doc attached to this instance as session notes. Persisted with
+    // the project so a re-opened session lands on the same doc. Only the URL
+    // reaches listeners; the recent-docs list stays in the plugin.
+    NotesDoc getNotesDoc() const
+    {
+        const juce::ScopedLock sl(notesLock);
+        return notesDoc;
+    }
+
+    void setNotesDoc(const NotesDoc& d)
+    {
+        {
+            const juce::ScopedLock sl(notesLock);
+            notesDoc = d;
+        }
+        server.setNotesUrl(d.url);
     }
 
     StreamServer server;
@@ -594,5 +623,9 @@ public:
 private:
     std::vector<float> interleaved;
 
+    mutable juce::CriticalSection notesLock;
+    NotesDoc notesDoc;
+
+    JUCE_DECLARE_WEAK_REFERENCEABLE (ListenLinkProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ListenLinkProcessor)
 };

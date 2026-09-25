@@ -9,6 +9,8 @@ void StyledButton::paintButton(juce::Graphics& g, bool over, bool down)
 {
     const auto r = getLocalBounds().toFloat();
     juce::Colour textColour = ll::text;
+    if (! isEnabled())
+        g.setOpacity(0.45f);
 
     switch (style)
     {
@@ -190,6 +192,24 @@ void QualityPopup::mouseDown(const juce::MouseEvent& e)
 ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     : AudioProcessorEditor(&p), processor(p)
 {
+    // Only the stock PopupMenu / AlertWindow / TextEditor use this; every
+    // other control paints itself.
+    lnf.setColour(juce::PopupMenu::backgroundColourId, juce::Colour(0xff26262f));
+    lnf.setColour(juce::PopupMenu::textColourId, ll::menuIdle);
+    lnf.setColour(juce::PopupMenu::highlightedBackgroundColourId, ll::border3);
+    lnf.setColour(juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+    lnf.setColour(juce::PopupMenu::headerTextColourId, ll::dim);
+    lnf.setColour(juce::AlertWindow::backgroundColourId, ll::card);
+    lnf.setColour(juce::AlertWindow::textColourId, ll::text);
+    lnf.setColour(juce::AlertWindow::outlineColourId, ll::border3);
+    lnf.setColour(juce::TextEditor::backgroundColourId, ll::bg);
+    lnf.setColour(juce::TextEditor::textColourId, ll::text);
+    lnf.setColour(juce::TextEditor::outlineColourId, ll::border3);
+    lnf.setColour(juce::TextEditor::focusedOutlineColourId, ll::accent);
+    lnf.setColour(juce::TextButton::buttonColourId, ll::buttonBg);
+    lnf.setColour(juce::TextButton::textColourOffId, ll::text);
+    setLookAndFeel(&lnf);
+
     addAndMakeVisible(meter);
 
     qualityButton.onClick = [this]
@@ -222,9 +242,29 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     {
         processor.server.setSharing(true);
         processor.tunnel.activate(processor.server.getPort());
+        maybeAutoCreateNotes();
         updateState();
     };
     addAndMakeVisible(createButton);
+
+    notesConnectButton.onClick = [this]
+    {
+        GoogleDocs::get().beginSignIn(processor.server.getPort());
+        updateState();
+    };
+    addChildComponent(notesConnectButton);
+
+    notesOpenButton.onClick = [this]
+    {
+        const auto d = processor.getNotesDoc();
+        if (d.isValid())
+            GoogleDocs::openExternal(d.url);
+    };
+    addChildComponent(notesOpenButton);
+
+    notesMenuButton.onClick = [this] { showNotesMenu(); };
+    addChildComponent(notesMenuButton);
+    GoogleDocs::get().refreshRecentAsync();
 
     stopButton.onClick = [this]
     {
@@ -248,7 +288,7 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     addChildComponent(updateButton);
     UpdateChecker::checkAsync();
 
-    setSize(560, 314);
+    setSize(560, 388);
     startTimerHz(30);
     updateState();
 
@@ -331,7 +371,176 @@ void ListenLinkEditor::updateState()
         updateButton.setVisible(true);
     }
 
+    // --- session notes card: buttons right-aligned, text gets the rest -----
+    {
+        auto& gd = GoogleDocs::get();
+        const bool configured = GoogleDocs::isConfigured();
+        const bool signedIn = gd.isSignedIn();
+        const auto doc = processor.getNotesDoc();
+        int right = 526;
+        auto place = [&right](StyledButton& b, const juce::String& text)
+        {
+            b.setButtonText(text);
+            const int w = (int) ll::textWidth(ll::sans(12.0f, true), text) + 26;
+            b.setBounds(right - w, 309, w, 26);
+            right -= w + 8;
+        };
+
+        notesMenuButton.setVisible(configured && signedIn);
+        if (notesMenuButton.isVisible())
+        {
+            place(notesMenuButton, juce::String(doc.isValid() ? "Change" : "Attach doc")
+                                       + juce::String::fromUTF8(" \xe2\x96\xbe"));
+            notesMenuButton.setEnabled(! gd.isBusy());
+        }
+        notesOpenButton.setVisible(configured && doc.isValid());
+        if (notesOpenButton.isVisible())
+            place(notesOpenButton, "Open");
+        notesConnectButton.setVisible(configured && ! signedIn);
+        if (notesConnectButton.isVisible())
+            place(notesConnectButton, gd.isSignInPending() ? "Waiting for Google..." : "Connect Google Docs");
+        notesTextRight = right;
+    }
+
     repaint();
+}
+
+// ---------------------------------------------------------------------------
+// session notes
+
+void ListenLinkEditor::showNotesMenu()
+{
+    auto& gd = GoogleDocs::get();
+    const auto doc = processor.getNotesDoc();
+    const auto recent = gd.getRecent();
+    const juce::String mid = juce::String::fromUTF8("  \xc2\xb7  ");
+
+    juce::PopupMenu m;
+    m.addItem(1, "New doc for this session");
+    m.addItem(2, "Paste a doc link...");
+    if (! recent.empty())
+    {
+        m.addSeparator();
+        m.addSectionHeader("Recent docs");
+        for (size_t i = 0; i < recent.size(); ++i)
+            m.addItem(100 + (int) i, recent[i].name + (recent[i].when.isNotEmpty() ? mid + recent[i].when : juce::String()),
+                      true, recent[i].id == doc.id);
+    }
+    m.addSeparator();
+    if (doc.isValid())
+        m.addItem(3, "Detach notes");
+    m.addItem(4, "Disconnect Google" + (gd.getEmail().isNotEmpty() ? " (" + gd.getEmail() + ")" : juce::String()));
+
+    juce::Component::SafePointer<ListenLinkEditor> safe(this);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&notesMenuButton).withMinimumWidth(240),
+                    [safe, recent](int r)
+    {
+        if (safe == nullptr || r == 0)
+            return;
+        if (r == 1)
+            safe->createNotesDoc();
+        else if (r == 2)
+            safe->promptForDocLink();
+        else if (r == 3)
+            safe->attachDoc({});
+        else if (r == 4)
+        {
+            GoogleDocs::get().signOut();
+            safe->updateState();
+        }
+        else if (r >= 100 && (size_t) (r - 100) < recent.size())
+            safe->attachDoc(recent[(size_t) (r - 100)]);
+    });
+}
+
+void ListenLinkEditor::attachDoc(const NotesDoc& d)
+{
+    processor.setNotesDoc(d);
+    GoogleDocs::get().clearError();
+    updateState();
+}
+
+void ListenLinkEditor::maybeAutoCreateNotes()
+{
+    auto& gd = GoogleDocs::get();
+    if (GoogleDocs::isConfigured() && gd.isSignedIn() && ! gd.isBusy()
+        && ! processor.getNotesDoc().isValid())
+        createNotesDoc();
+}
+
+void ListenLinkEditor::createNotesDoc()
+{
+    const auto name = "Session notes " + juce::String::fromUTF8("\xe2\x80\x93 ")
+                    + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H:%M");
+    juce::WeakReference<ListenLinkProcessor> proc(&processor);
+    GoogleDocs::get().runJob([proc, name]
+    {
+        auto& gd = GoogleDocs::get();
+        NotesDoc doc;
+        juce::String err;
+        const bool ok = gd.createDoc(name, doc, err);
+        if (err.isNotEmpty())
+            gd.setError(err);
+        if (ok)
+            juce::MessageManager::callAsync([proc, doc]
+            {
+                if (auto* p = proc.get())
+                    p->setNotesDoc(doc);
+            });
+    });
+    updateState();
+}
+
+void ListenLinkEditor::promptForDocLink()
+{
+    auto* w = new juce::AlertWindow("Attach a Google Doc",
+        "Paste the link to a Google Doc. In Google Docs, set its sharing to "
+        "\"Anyone with the link\" as Editor so listeners can type in it.",
+        juce::MessageBoxIconType::NoIcon, this);
+    w->addTextEditor("url", "", "Doc link");
+    w->addButton("Attach", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<ListenLinkEditor> safe(this);
+    w->enterModalState(true, juce::ModalCallbackFunction::create([safe, w](int r)
+    {
+        if (r == 1 && safe != nullptr)
+            safe->attachPastedDoc(w->getTextEditorContents("url"));
+    }), true);
+}
+
+void ListenLinkEditor::attachPastedDoc(const juce::String& text)
+{
+    NotesDoc doc;
+    if (! GoogleDocs::parseDocUrl(text, doc))
+    {
+        GoogleDocs::get().setError("That doesn't look like a Google Docs link.");
+        updateState();
+        return;
+    }
+    attachDoc(doc);
+
+    // Best effort: pick up the doc's title from its public page so the card
+    // shows a name instead of "Linked doc". Silent if the doc isn't public.
+    juce::WeakReference<ListenLinkProcessor> proc(&processor);
+    GoogleDocs::get().runJob([proc, doc]
+    {
+        const auto title = GoogleDocs::fetchPublicTitle(doc.url);
+        if (title.isEmpty())
+            return;
+        juce::MessageManager::callAsync([proc, doc, title]
+        {
+            if (auto* p = proc.get())
+            {
+                auto cur = p->getNotesDoc();
+                if (cur.id == doc.id)
+                {
+                    cur.name = title;
+                    p->setNotesDoc(cur);
+                }
+            }
+        });
+    });
 }
 
 // launchInDefaultBrowser goes through NSWorkspace; if a host process ever
@@ -473,12 +682,56 @@ void ListenLinkEditor::paint(juce::Graphics& g)
     g.setColour(ll::card);
     g.fillRoundedRectangle(20.0f, 68.0f, 520.0f, 102.0f, 10.0f);    // meters
     g.fillRoundedRectangle(20.0f, 184.0f, 520.0f, 84.0f, 10.0f);    // public
+    g.fillRoundedRectangle(20.0f, 282.0f, 520.0f, 60.0f, 10.0f);    // notes
 
     const auto sectionFont = ll::sans(10.0f, true).withExtraKerningFactor(0.1f);
     g.setColour(ll::dim);
     g.setFont(sectionFont);
     g.drawText("STREAM QUALITY", 34, 89, 200, 12, juce::Justification::centredLeft);
     g.drawText("PUBLIC LINK", 34, 198, 200, 12, juce::Justification::centredLeft);
+    g.drawText("SESSION NOTES", 34, 293, 200, 12, juce::Justification::centredLeft);
+
+    // --- session notes card ---------------------------------------------
+    {
+        auto& gd = GoogleDocs::get();
+        const auto doc = processor.getNotesDoc();
+        const auto err = gd.getLastError();
+        const auto email = gd.getEmail();
+
+        if (gd.isSignedIn() && email.isNotEmpty())
+        {
+            g.setColour(ll::faint);
+            g.setFont(ll::sans(10.0f));
+            const auto w = juce::jmin(260.0f, ll::textWidth(ll::sans(10.0f), email) + 2.0f);
+            g.drawText(email, (int) (526.0f - w), 293, (int) w, 12, juce::Justification::centredRight);
+        }
+
+        juce::String line;
+        juce::Colour col = ll::dim;
+        if (! GoogleDocs::isConfigured())
+            line = "Google Docs notes aren't available in this build.";
+        else if (err.isNotEmpty())
+        {
+            line = err;
+            col = ll::red;
+        }
+        else if (gd.isBusy())
+            line = "Working with Google...";
+        else if (doc.isValid())
+        {
+            line = doc.name;
+            col = ll::text;
+        }
+        else if (gd.isSignedIn())
+            line = "A new doc is created with your public link.";
+        else
+            line = "Attach a Google Doc that everyone on the link can edit.";
+
+        g.setColour(col);
+        g.setFont(ll::sans(12.0f));
+        g.drawText(line, 34, 309, juce::jmax(0, notesTextRight - 10 - 34), 26,
+                   juce::Justification::centredLeft);
+    }
 
     // --- public link card states ---------------------------------------
     const int state = tunnelState();
@@ -542,7 +795,7 @@ void ListenLinkEditor::paint(juce::Graphics& g)
                                           + mid + "48 kHz";
     g.setColour(ll::faint);
     g.setFont(ll::mono(10.0f));
-    g.drawText(fmt, 22, 282, 300, 12, juce::Justification::centredLeft);
+    g.drawText(fmt, 22, 356, 300, 12, juce::Justification::centredLeft);
     g.drawText(juce::String(kQualityHints[q]) + " per listener",
-               238, 282, 300, 12, juce::Justification::centredRight);
+               238, 356, 300, 12, juce::Justification::centredRight);
 }

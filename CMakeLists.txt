@@ -50,6 +50,23 @@ target_sources(ListenLink PRIVATE
     src/PluginEditor.cpp
     src/StreamServer.cpp)
 
+# Google Docs session notes need an OAuth client (Drive API, drive.file scope).
+# Not committed: create google-client.cmake next to this file containing
+#   set(LL_GOOGLE_CLIENT_ID "....apps.googleusercontent.com")
+#   set(LL_GOOGLE_CLIENT_SECRET "....")
+# Without it the plugin builds and runs; the notes card says the feature is
+# unavailable in this build.
+include(${CMAKE_CURRENT_SOURCE_DIR}/google-client.cmake OPTIONAL)
+if(NOT DEFINED LL_GOOGLE_CLIENT_ID)
+    set(LL_GOOGLE_CLIENT_ID "")
+endif()
+if(NOT DEFINED LL_GOOGLE_CLIENT_SECRET)
+    set(LL_GOOGLE_CLIENT_SECRET "")
+endif()
+target_compile_definitions(ListenLink PRIVATE
+    LL_GOOGLE_CLIENT_ID="${LL_GOOGLE_CLIENT_ID}"
+    LL_GOOGLE_CLIENT_SECRET="${LL_GOOGLE_CLIENT_SECRET}")
+
 target_compile_definitions(ListenLink PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0

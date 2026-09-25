@@ -110,7 +110,7 @@ class ListenLinkEditor : public juce::AudioProcessorEditor,
 {
 public:
     explicit ListenLinkEditor(ListenLinkProcessor&);
-    ~ListenLinkEditor() override = default;
+    ~ListenLinkEditor() override { setLookAndFeel(nullptr); }
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -133,7 +133,18 @@ private:
     int tunnelState() const;          // 0 idle, 1 starting, 2 up
     int pillWidth() const;            // current width of the LIVE pill
 
+    // Session notes (Google Doc) card. Results of background Google calls
+    // arrive on the message thread via a WeakReference to the processor, so
+    // a closed editor or a deleted instance is never touched.
+    void showNotesMenu();
+    void createNotesDoc();
+    void maybeAutoCreateNotes();      // Create Public Link with no doc attached yet
+    void promptForDocLink();
+    void attachPastedDoc(const juce::String& text);
+    void attachDoc(const NotesDoc& d);
+
     ListenLinkProcessor& processor;
+    juce::LookAndFeel_V4 lnf;         // themed PopupMenu / AlertWindow only
 
     MeterPanel meter;
     QualityButton qualityButton;
@@ -141,11 +152,15 @@ private:
     StyledButton createButton     { "Create public link", StyledButton::Style::accentBtn };
     StyledButton stopButton       { "Stop", StyledButton::Style::danger };
     StyledButton updateButton     { "Update", StyledButton::Style::accentBtn };
+    StyledButton notesConnectButton { "Connect Google Docs", StyledButton::Style::accentBtn };
+    StyledButton notesOpenButton    { "Open", StyledButton::Style::normal };
+    StyledButton notesMenuButton    { "Attach doc", StyledButton::Style::normal };
     juce::Label publicUrlLabel;
     QualityPopup popup;
 
     float dispL = 0, dispR = 0, holdL = 0, holdR = 0;
     int tick = 0, copiedPublic = 0;
+    int notesTextRight = 526;         // where the notes-card text must stop (buttons start)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ListenLinkEditor)
 };

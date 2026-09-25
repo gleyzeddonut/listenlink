@@ -3,3 +3,6 @@ dist/
 .DS_Store
 
 worker/.wrangler/
+
+# Google OAuth client for the Drive API (see CMakeLists.txt)
+google-client.cmake
