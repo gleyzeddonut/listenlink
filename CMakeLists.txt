@@ -55,7 +55,8 @@ target_sources(ListenLink PRIVATE
 #   set(LL_GOOGLE_CLIENT_ID "....apps.googleusercontent.com")
 #   set(LL_GOOGLE_CLIENT_SECRET "....")
 # Without it the plugin builds and runs; the notes card says the feature is
-# unavailable in this build.
+# unavailable in this build. Creating the file later needs a re-run of
+# `cmake -B build` (an OPTIONAL include of a missing file isn't tracked).
 include(${CMAKE_CURRENT_SOURCE_DIR}/google-client.cmake OPTIONAL)
 if(NOT DEFINED LL_GOOGLE_CLIENT_ID)
     set(LL_GOOGLE_CLIENT_ID "")

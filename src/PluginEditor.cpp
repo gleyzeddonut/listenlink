@@ -416,6 +416,7 @@ void ListenLinkEditor::showNotesMenu()
     const juce::String mid = juce::String::fromUTF8("  \xc2\xb7  ");
 
     juce::PopupMenu m;
+    m.setLookAndFeel(&lnf);   // menus don't inherit the editor's LookAndFeel
     m.addItem(1, "New doc for this session");
     m.addItem(2, "Paste a doc link...");
     if (! recent.empty())
@@ -497,6 +498,7 @@ void ListenLinkEditor::promptForDocLink()
         "Paste the link to a Google Doc. In Google Docs, set its sharing to "
         "\"Anyone with the link\" as Editor so listeners can type in it.",
         juce::MessageBoxIconType::NoIcon, this);
+    w->setLookAndFeel(&lnf);   // a desktop window: doesn't inherit ours
     w->addTextEditor("url", "", "Doc link");
     w->addButton("Attach", 1, juce::KeyPress(juce::KeyPress::returnKey));
     w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));

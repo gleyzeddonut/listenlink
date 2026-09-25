@@ -239,7 +239,8 @@ private:
         void run() override
         {
             juce::String collected;
-            char buf[2048];
+            char buf[256];   // fread() fills the whole request: keep it small so
+                             // the URL line isn't held back waiting for more log
             while (! threadShouldExit())
             {
                 const int n = owner.proc.readProcessOutput(buf, (int) sizeof(buf));
@@ -614,10 +615,14 @@ public:
                 server.setStreamId(identity.id);
             }
 
-            // Notes doc: absent in saves before 0.9.0 (reads come back empty).
+            // Notes doc: absent in saves before 0.9.0 (keep whatever is
+            // attached); present-but-empty in newer saves means "none".
+            const bool hasDocFields = in.getPosition() < in.getTotalLength();
             NotesDoc d { in.readString(), in.readString(), in.readString(), {} };
             if (d.isValid() && d.url.startsWith("https://docs.google.com/document/d/"))
                 setNotesDoc(d);
+            else if (hasDocFields)
+                setNotesDoc({});
         }
     }
 

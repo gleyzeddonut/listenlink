@@ -42,7 +42,9 @@ struct NotesDoc
 class GoogleDocs
 {
 public:
-    static GoogleDocs& get() { static GoogleDocs g; return g; }
+    // Leaked on purpose: detached jobs may still be running at static
+    // destruction when the host quits seconds after the editor opened.
+    static GoogleDocs& get() { static auto* g = new GoogleDocs(); return *g; }
 
     static bool isConfigured() { return juce::String(LL_GOOGLE_CLIENT_ID).isNotEmpty(); }
 
@@ -159,8 +161,11 @@ public:
         // can only tell us the email address - seen in the field 2026-09-25.
         if (! resp.getProperty("scope", "").toString().contains("auth/drive.file"))
         {
-            int st = 0;
-            httpForm("https://oauth2.googleapis.com/revoke", "token=" + enc(rt), st);
+            juce::Thread::launch([rt]
+            {
+                int st = 0;
+                httpForm("https://oauth2.googleapis.com/revoke", "token=" + enc(rt), st);
+            });
             setError("Google didn't grant Drive access. Connect again and tick the Google Drive box.");
             html = page("Drive access not granted",
                         "The sign-in went through, but the Google Drive permission wasn't ticked, so "
@@ -286,16 +291,22 @@ public:
 
     void refreshRecentAsync()
     {
-        if (! isSignedIn() || refreshing.exchange(true))
+        juce::String rt;
+        {
+            const juce::ScopedLock sl(lock);
+            rt = refreshToken;
+        }
+        if (rt.isEmpty() || refreshing.exchange(true))
             return;
-        juce::Thread::launch([this]
+        juce::Thread::launch([this, rt]
         {
             std::vector<NotesDoc> docs;
             juce::String err;
             if (listRecent(docs, err))
             {
                 const juce::ScopedLock sl(lock);
-                recent = std::move(docs);
+                if (refreshToken == rt)   // not if the account changed meanwhile
+                    recent = std::move(docs);
             }
             refreshing.store(false);
         });
@@ -436,15 +447,22 @@ private:
             if (resp.getProperty("error", "").toString() == "invalid_grant")
             {
                 // Revoked or expired at Google's end: forget it so the UI
-                // offers Connect again instead of failing forever.
+                // offers Connect again instead of failing forever - unless a
+                // fresh sign-in replaced this token while we were waiting.
+                bool stillCurrent = false;
                 {
                     const juce::ScopedLock sl(lock);
-                    refreshToken.clear();
-                    accessToken.clear();
-                    email.clear();
-                    recent.clear();
+                    stillCurrent = (refreshToken == rt);
+                    if (stillCurrent)
+                    {
+                        refreshToken.clear();
+                        accessToken.clear();
+                        email.clear();
+                        recent.clear();
+                    }
                 }
-                authFile().deleteFile();
+                if (stillCurrent)
+                    authFile().deleteFile();
                 err = "Google connection expired - connect again.";
             }
             else
@@ -470,8 +488,11 @@ private:
                                 const juce::String& bodyData, int& status)
     {
         status = 0;
-        const auto cfg = juce::File::createTempFile("llcfg");
-        const auto bodyFile = juce::File::createTempFile("llbody");
+        // Unique per call (several curls can run at once on different threads;
+        // File::createTempFile draws from a shared, non-thread-safe RNG).
+        const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory);
+        const auto cfg = tmp.getChildFile("listenlink-" + juce::Uuid().toString() + ".cfg");
+        const auto bodyFile = tmp.getChildFile("listenlink-" + juce::Uuid().toString() + ".body");
         juce::String config = configLines;
         if (bodyData.isNotEmpty())
         {

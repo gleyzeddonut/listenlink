@@ -189,20 +189,28 @@ void StreamServer::handleConnection(std::unique_ptr<juce::StreamingSocket> sock)
 
     if (path == "/oauth/callback")
     {
-        juce::String html;
-        int status = 404;
-        if (oauthCallback)
-            status = oauthCallback(target, html);
-        if (html.isEmpty())
-            html = "Not found";
-        const juce::String reason = status == 200 ? "OK" : status == 400 ? "Bad Request" : "Not Found";
-        const auto response =
-            "HTTP/1.1 " + juce::String(status) + " " + reason + "\r\n"
-            "Content-Type: text/html; charset=utf-8\r\n"
-            "Content-Length: " + juce::String((int) html.getNumBytesAsUTF8()) + "\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n" + html;
-        sock->write(response.toRawUTF8(), (int) response.getNumBytesAsUTF8());
+        // The token exchange blocks on curl for seconds. Keep the accept
+        // thread free for listeners: answer from a detached thread that owns
+        // the socket, and let it finish even if the server is stopped.
+        std::shared_ptr<juce::StreamingSocket> s(sock.release());
+        auto cb = oauthCallback;
+        juce::Thread::launch([s, cb, target]
+        {
+            juce::String html;
+            int status = 404;
+            if (cb)
+                status = cb(target, html);
+            if (html.isEmpty())
+                html = "Not found";
+            const juce::String reason = status == 200 ? "OK" : status == 400 ? "Bad Request" : "Not Found";
+            const auto response =
+                "HTTP/1.1 " + juce::String(status) + " " + reason + "\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "Content-Length: " + juce::String((int) html.getNumBytesAsUTF8()) + "\r\n"
+                "Cache-Control: no-store\r\n"
+                "Connection: close\r\n\r\n" + html;
+            s->write(response.toRawUTF8(), (int) response.getNumBytesAsUTF8());
+        });
         return;
     }
 
@@ -523,10 +531,11 @@ std::vector<uint8_t> StreamServer::buildHelloFrame(double rate, int mode) const
 {
     const auto id = getStreamId();
     const auto notes = getNotesUrl();
+    // notes is always present (empty = none) so a page that reconnects after
+    // a detach drops its stale button.
     const auto idField = (id.isEmpty() ? juce::String()
                                        : ",\"streamId\":\"" + id + "\"")
-                       + (notes.isEmpty() ? juce::String()
-                                          : ",\"notes\":\"" + jsonEscape(notes) + "\"");
+                       + ",\"notes\":\"" + jsonEscape(notes) + "\"";
     juce::String json;
     if (mode == 0)
         json = "{\"codec\":\"pcm\",\"sampleRate\":" + juce::String((int) rate)
