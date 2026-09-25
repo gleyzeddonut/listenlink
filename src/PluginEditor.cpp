@@ -717,6 +717,13 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         }
         else if (gd.isBusy())
             line = "Working with Google...";
+        else if (gd.isSignInPending())
+        {
+            // Google's consent page has a separate checkbox for Drive access;
+            // people miss it. Say so while they're looking at that page.
+            line = "In the browser, tick the Google Drive box, then Continue.";
+            col = ll::accent;
+        }
         else if (doc.isValid())
         {
             line = doc.name;

@@ -154,6 +154,21 @@ public:
             return 200;
         }
 
+        // Google's consent page lets people untick individual permissions.
+        // Without Drive access nothing here works, so don't keep a token that
+        // can only tell us the email address - seen in the field 2026-09-25.
+        if (! resp.getProperty("scope", "").toString().contains("auth/drive.file"))
+        {
+            int st = 0;
+            httpForm("https://oauth2.googleapis.com/revoke", "token=" + enc(rt), st);
+            setError("Google didn't grant Drive access. Connect again and tick the Google Drive box.");
+            html = page("Drive access not granted",
+                        "The sign-in went through, but the Google Drive permission wasn't ticked, so "
+                        "ListenLink can't create docs. Close this tab, click Connect Google Docs again, "
+                        "and tick the box that mentions Google Drive files.");
+            return 200;
+        }
+
         {
             const juce::ScopedLock sl(lock);
             refreshToken = rt;
@@ -211,7 +226,10 @@ public:
         const auto id = resp.getProperty("id", "").toString();
         if (status != 200 || id.isEmpty())
         {
-            err = "Couldn't create the doc (" + describe(resp, status) + ").";
+            const auto why = describe(resp, status);
+            err = why.containsIgnoreCase("insufficient authentication scopes")
+                ? juce::String("Google didn't grant Drive access. Disconnect, then connect again and tick the Google Drive box.")
+                : "Couldn't create the doc (" + why + ").";
             return false;
         }
         out = { id, resp.getProperty("name", name).toString(), NotesDoc::urlFor(id), {} };
