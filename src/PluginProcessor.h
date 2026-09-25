@@ -225,6 +225,57 @@ public:
     }
 
 private:
+    // cloudflared's output is read on its own thread. readProcessOutput() is a
+    // plain blocking pipe read: it returns only when the child prints
+    // something, and a quiet tunnel prints nothing for hours. run() must keep
+    // polling the register/unregister requests meanwhile. Found 2026-09-25:
+    // Create Public Link sat on "starting..." with the tunnel thread parked in
+    // fread() - registration only ran when cloudflared happened to log a line.
+    class OutputReader : public juce::Thread
+    {
+    public:
+        explicit OutputReader(TunnelManager& o) : juce::Thread("ListenLink tunnel reader"), owner(o) {}
+
+        void run() override
+        {
+            juce::String collected;
+            char buf[2048];
+            while (! threadShouldExit())
+            {
+                const int n = owner.proc.readProcessOutput(buf, (int) sizeof(buf));
+                if (n <= 0)
+                    break;   // EOF: cloudflared exited or was killed
+                if (owner.urlFound.load())
+                    continue;   // keep the pipe drained; nothing more to scrape
+
+                collected += juce::String::fromUTF8(buf, n);
+                const int end = collected.indexOf(".trycloudflare.com");
+                if (end >= 0)
+                {
+                    const int start = collected.substring(0, end).lastIndexOf("https://");
+                    if (start >= 0)
+                    {
+                        const auto scraped = collected.substring(start, end) + ".trycloudflare.com";
+                        {
+                            const juce::ScopedLock sl(owner.lock);
+                            owner.tunnelUrl = scraped;
+                        }
+                        owner.urlFoundAt.store(juce::Time::getMillisecondCounter());
+                        owner.urlFound.store(true);
+                        if (owner.active.load())
+                            owner.needsRegister.store(true);
+                    }
+                }
+                // cloudflared logs for the whole session; never grow unbounded.
+                if (collected.length() > 65536)
+                    collected = collected.substring(collected.length() - 8192);
+            }
+        }
+
+    private:
+        TunnelManager& owner;
+    };
+
     void run() override
     {
         // Keep retrying the one-time download instead of exiting: a dead
@@ -290,48 +341,22 @@ private:
                 return;
             }
 
-            juce::String collected;
-            char buf[2048];
-            bool urlFound = false;   // NOT getPublicUrl().isEmpty() — that now
-                                     // holds the short link before the scrape
-            uint32_t urlFoundAt = 0; // ms tick of the scrape (see the hold below)
+            // urlFound is NOT getPublicUrl().isEmpty() - that holds the short
+            // link before the scrape. Reset per launch; the reader sets them.
+            urlFound.store(false);
+            urlFoundAt.store(0);
+            OutputReader reader(*this);
+            reader.startThread();
+            bool sawUrl = false;
 
             while (! threadShouldExit() && proc.isRunning())
             {
-                const int n = proc.readProcessOutput(buf, (int) sizeof(buf));
-                if (n > 0)
+                juce::Thread::sleep(100);
+
+                if (! sawUrl && urlFound.load())
                 {
-                    // Only accumulate while still scraping — cloudflared logs
-                    // for the whole session and this would otherwise grow
-                    // without bound. (Reads continue so the pipe stays drained.)
-                    if (! urlFound)
-                    {
-                        collected += juce::String::fromUTF8(buf, n);
-                        const int end = collected.indexOf(".trycloudflare.com");
-                        if (end >= 0)
-                        {
-                            const int start = collected.substring(0, end).lastIndexOf("https://");
-                            if (start >= 0)
-                            {
-                                const auto scraped = collected.substring(start, end) + ".trycloudflare.com";
-                                urlFound = true;
-                                urlFoundAt = juce::Time::getMillisecondCounter();
-                                attempt = 0;   // healthy again: future drops back off from scratch
-                                {
-                                    const juce::ScopedLock sl(lock);
-                                    tunnelUrl = scraped;
-                                }
-                                if (active.load())
-                                    needsRegister.store(true);
-                            }
-                        }
-                        if (collected.length() > 65536)
-                            collected = collected.substring(collected.length() - 8192);
-                    }
-                }
-                else
-                {
-                    juce::Thread::sleep(100);
+                    sawUrl = true;
+                    attempt = 0;   // healthy again: future drops back off from scratch
                 }
 
                 // Unregister first, register second, both on THIS thread, so
@@ -362,8 +387,8 @@ private:
                 // after registration in every trial. Warm tunnels (pre-warmed
                 // when the editor opened) are past the hold already, so the
                 // instant path is unchanged for them.
-                const bool tunnelSettled = urlFound
-                    && juce::Time::getMillisecondCounter() - urlFoundAt >= kFreshTunnelHoldMs;
+                const bool tunnelSettled = urlFound.load()
+                    && juce::Time::getMillisecondCounter() - urlFoundAt.load() >= kFreshTunnelHoldMs;
                 if (tunnelSettled && active.load() && needsRegister.exchange(false))
                 {
                     juce::String u;
@@ -377,6 +402,10 @@ private:
             }
 
             proc.kill();
+            // The reader's read() returns 0 once the pipe closes behind the
+            // dead child; the timeout is only a backstop.
+            reader.signalThreadShouldExit();
+            reader.stopThread(3000);
         }
 
         if (shouldRun.load() && active.load() && ! registered.load())
@@ -456,6 +485,8 @@ private:
     std::atomic<bool> active { false };           // user wants the link shared
     std::atomic<bool> needsRegister { false };    // tunnel thread owes a registration
     std::atomic<bool> needsUnregister { false };  // tunnel thread owes an unregistration
+    std::atomic<bool> urlFound { false };         // reader scraped a URL for the current launch
+    std::atomic<uint32_t> urlFoundAt { 0 };       // ms tick of that scrape (fresh-tunnel hold)
     juce::ChildProcess proc;
     std::atomic<bool> shouldRun { false };
     int port = 0;
