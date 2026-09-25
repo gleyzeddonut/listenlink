@@ -371,7 +371,7 @@ void ListenLinkEditor::updateState()
         updateButton.setVisible(true);
     }
 
-    // --- session notes card: buttons right-aligned, text gets the rest -----
+    // --- Google Doc card: buttons right-aligned, text gets the rest --------
     {
         auto& gd = GoogleDocs::get();
         const bool configured = GoogleDocs::isConfigured();
@@ -428,7 +428,7 @@ void ListenLinkEditor::showNotesMenu()
     }
     m.addSeparator();
     if (doc.isValid())
-        m.addItem(3, "Detach notes");
+        m.addItem(3, "Detach doc");
     m.addItem(4, "Disconnect Google" + (gd.getEmail().isNotEmpty() ? " (" + gd.getEmail() + ")" : juce::String()));
 
     juce::Component::SafePointer<ListenLinkEditor> safe(this);
@@ -470,8 +470,8 @@ void ListenLinkEditor::maybeAutoCreateNotes()
 
 void ListenLinkEditor::createNotesDoc()
 {
-    const auto name = "Session notes " + juce::String::fromUTF8("\xe2\x80\x93 ")
-                    + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H:%M");
+    const auto name = "Session doc " + juce::String::fromUTF8("\xe2\x80\x93 ")
+                    + juce::Time::getCurrentTime().formatted("%Y-%m-%d");
     juce::WeakReference<ListenLinkProcessor> proc(&processor);
     GoogleDocs::get().runJob([proc, name]
     {
@@ -689,9 +689,9 @@ void ListenLinkEditor::paint(juce::Graphics& g)
     g.setFont(sectionFont);
     g.drawText("STREAM QUALITY", 34, 89, 200, 12, juce::Justification::centredLeft);
     g.drawText("PUBLIC LINK", 34, 198, 200, 12, juce::Justification::centredLeft);
-    g.drawText("SESSION NOTES", 34, 293, 200, 12, juce::Justification::centredLeft);
+    g.drawText("GOOGLE DOC", 34, 293, 200, 12, juce::Justification::centredLeft);
 
-    // --- session notes card ---------------------------------------------
+    // --- Google Doc card ------------------------------------------------
     {
         auto& gd = GoogleDocs::get();
         const auto doc = processor.getNotesDoc();

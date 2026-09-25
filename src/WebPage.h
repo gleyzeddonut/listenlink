@@ -160,7 +160,7 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
       <p>Your connection is struggling &mdash; audio may drop out while the buffer rebuilds.</p>
     </div>
   </div>
-  <div class="notes" id="notes"><a id="notesLink" href="#" target="_blank" rel="noopener"><span class="ndoc"></span><span>Session notes<small>Google Docs &middot; opens in a new tab</small></span></a></div>
+  <div class="notes" id="notes"><a id="notesLink" href="#" target="_blank" rel="noopener"><span class="ndoc"></span><span>Session doc<small>Google Docs &middot; opens in a new tab</small></span></a></div>
   <div class="foot mono" id="foot">READY</div>
 </div>
 <script>
