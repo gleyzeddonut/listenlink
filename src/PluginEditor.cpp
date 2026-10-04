@@ -42,6 +42,18 @@ void StyledButton::paintButton(juce::Graphics& g, bool over, bool down)
     g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
 }
 
+void ToggleSwitch::paintButton(juce::Graphics& g, bool over, bool)
+{
+    const auto r = getLocalBounds().toFloat().withSizeKeepingCentre(26.0f, 14.0f);
+    const bool on = getToggleState();
+    g.setColour(on ? (over ? ll::accent.brighter(0.15f) : ll::accent)
+                   : (over ? ll::buttonHov : ll::buttonBg));
+    g.fillRoundedRectangle(r, 7.0f);
+    const float d = 10.0f;
+    g.setColour(on ? juce::Colours::white : ll::dim);
+    g.fillEllipse(on ? r.getRight() - 2.0f - d : r.getX() + 2.0f, r.getCentreY() - d / 2, d, d);
+}
+
 void QualityButton::paintButton(juce::Graphics& g, bool over, bool down)
 {
     const auto r = getLocalBounds().toFloat();
@@ -242,7 +254,7 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
     {
         processor.server.setSharing(true);
         processor.tunnel.activate(processor.server.getPort());
-        maybeAutoCreateNotes();
+        wantAutoDoc = true;
         updateState();
     };
     addAndMakeVisible(createButton);
@@ -264,6 +276,18 @@ ListenLinkEditor::ListenLinkEditor(ListenLinkProcessor& p)
 
     notesMenuButton.onClick = [this] { showNotesMenu(); };
     addChildComponent(notesMenuButton);
+
+    notesToggle.setToggleState(processor.isNotesEnabled(), juce::dontSendNotification);
+    notesToggle.onClick = [this]
+    {
+        const bool on = notesToggle.getToggleState();
+        processor.setNotesEnabled(on);
+        wantAutoDoc = on;
+        if (! on)
+            GoogleDocs::get().clearError();
+        updateState();
+    };
+    addAndMakeVisible(notesToggle);
     GoogleDocs::get().refreshRecentAsync();
 
     stopButton.onClick = [this]
@@ -338,6 +362,9 @@ void ListenLinkEditor::timerCallback()
     if (tunnelState() == 1)
         repaint(20, 196, 520, 60);             // spinner
 
+    if (linkRestored > 0)
+        --linkRestored;
+
     if (copiedPublic > 0 && --copiedPublic == 0)
     {
         copyPublicButton.setButtonText("Copy");
@@ -358,6 +385,14 @@ void ListenLinkEditor::updateState()
 
     const int state = tunnelState();
     createButton.setVisible(state == 0);
+
+    // Short link came back after a fallback: the URL in the box just changed.
+    const bool fb = processor.tunnel.isFallback();
+    if (wasFallback && ! fb && processor.tunnel.isRegistered())
+        linkRestored = 30 * 15;
+    if (state != 2)
+        linkRestored = 0;
+    wasFallback = fb;
     publicUrlLabel.setVisible(state == 2);
     copyPublicButton.setVisible(state == 2);
     stopButton.setVisible(state == 2);
@@ -377,6 +412,8 @@ void ListenLinkEditor::updateState()
         const bool configured = GoogleDocs::isConfigured();
         const bool signedIn = gd.isSignedIn();
         const auto doc = processor.getNotesDoc();
+        const bool enabled = processor.isNotesEnabled();
+        notesToggle.setToggleState(enabled, juce::dontSendNotification);   // host may restore state
         int right = 526;
         auto place = [&right](StyledButton& b, const juce::String& text)
         {
@@ -386,22 +423,23 @@ void ListenLinkEditor::updateState()
             right -= w + 8;
         };
 
-        notesMenuButton.setVisible(configured && signedIn);
+        notesMenuButton.setVisible(enabled && configured && signedIn);
         if (notesMenuButton.isVisible())
         {
             place(notesMenuButton, juce::String(doc.isValid() ? "Change" : "Attach doc")
                                        + juce::String::fromUTF8(" \xe2\x96\xbe"));
             notesMenuButton.setEnabled(! gd.isBusy());
         }
-        notesOpenButton.setVisible(configured && doc.isValid());
+        notesOpenButton.setVisible(enabled && configured && doc.isValid());
         if (notesOpenButton.isVisible())
             place(notesOpenButton, "Open");
-        notesConnectButton.setVisible(configured && ! signedIn);
+        notesConnectButton.setVisible(enabled && configured && ! signedIn);
         if (notesConnectButton.isVisible())
             place(notesConnectButton, gd.isSignInPending() ? "Waiting for Google..." : "Connect Google Docs");
         notesTextRight = right;
     }
 
+    maybeAutoCreateNotes();
     repaint();
 }
 
@@ -461,11 +499,17 @@ void ListenLinkEditor::attachDoc(const NotesDoc& d)
     updateState();
 }
 
+// A doc is made only when the toggle is on and the link is shared. Asked for
+// by Create or by switching the toggle on; waits (via updateState) for the
+// Google sign-in if that isn't done yet, then fires once.
 void ListenLinkEditor::maybeAutoCreateNotes()
 {
     auto& gd = GoogleDocs::get();
-    if (GoogleDocs::isConfigured() && gd.isSignedIn() && ! gd.isBusy()
-        && ! processor.getNotesDoc().isValid())
+    if (! wantAutoDoc || ! processor.isNotesEnabled() || ! processor.tunnel.isSharing()
+        || ! GoogleDocs::isConfigured() || ! gd.isSignedIn() || gd.isBusy())
+        return;
+    wantAutoDoc = false;
+    if (! processor.getNotesDoc().isValid())
         createNotesDoc();
 }
 
@@ -601,6 +645,9 @@ void ListenLinkEditor::resized()
     const int cw = (int) ll::textWidth(ll::sans(12.0f, true), createButton.getButtonText()) + 32;
     createButton.setBounds(526 - cw, 221, cw, 32);
 
+    const int lw = (int) std::ceil(ll::textWidth(ll::sans(10.0f, true).withExtraKerningFactor(0.1f), "GOOGLE DOC"));
+    notesToggle.setBounds(34 + lw + 8, 291, 30, 16);
+
     popup.setBounds(getLocalBounds());
 }
 
@@ -700,7 +747,8 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         const auto err = gd.getLastError();
         const auto email = gd.getEmail();
 
-        if (gd.isSignedIn() && email.isNotEmpty())
+        const bool enabled = processor.isNotesEnabled();
+        if (enabled && gd.isSignedIn() && email.isNotEmpty())
         {
             g.setColour(ll::faint);
             g.setFont(ll::sans(10.0f));
@@ -712,6 +760,8 @@ void ListenLinkEditor::paint(juce::Graphics& g)
         juce::Colour col = ll::dim;
         if (! GoogleDocs::isConfigured())
             line = "Google Docs notes aren't available in this build.";
+        else if (! enabled)
+            line = "Off. Switch on to share a Google Doc with listeners.";
         else if (err.isNotEmpty())
         {
             line = err;
@@ -749,11 +799,18 @@ void ListenLinkEditor::paint(juce::Graphics& g)
     {
         // The link shows instantly, so this dot is the only honest signal of
         // whether the tunnel behind it is actually up yet.
+        // Fallback: the link service didn't take the registration, so the box
+        // holds the raw tunnel URL (works, but changes every session) while
+        // the tunnel thread retries; it swaps back to the short link itself.
         const bool reg = processor.tunnel.isRegistered();
+        const bool fb = processor.tunnel.isFallback();
         const auto st = processor.tunnel.getStatus();
         const bool err = st.contains("Couldn't") || st.contains("Failed") || st.contains("exited");
-        const juce::String cap = reg ? "tunnel up" : err ? "tunnel down" : "starting...";
-        g.setColour(reg ? ll::green : err ? ll::red : ll::dim);
+        const juce::String cap = fb ? "short link down - temporary link, retrying"
+                               : reg ? (linkRestored > 0 ? "short link back - copy it again" : "tunnel up")
+                               : err ? "tunnel down" : "starting...";
+        g.setColour(fb ? ll::yellow : reg ? (linkRestored > 0 ? ll::accent : ll::green)
+                                    : err ? ll::red : ll::dim);
         g.setFont(ll::sans(10.0f));
         const auto capW = ll::textWidth(ll::sans(10.0f), cap);
         g.fillEllipse(526.0f - capW - 9.0f, 201.5f, 5.0f, 5.0f);

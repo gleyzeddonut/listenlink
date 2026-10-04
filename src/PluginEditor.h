@@ -63,6 +63,14 @@ private:
     juce::Colour colourOverride;
 };
 
+// Small on/off switch (the Google Doc card's toggle).
+class ToggleSwitch : public juce::Button
+{
+public:
+    ToggleSwitch() : juce::Button("toggle") { setClickingTogglesState(true); }
+    void paintButton(juce::Graphics& g, bool over, bool down) override;
+};
+
 // The "STREAM QUALITY" dropdown trigger: label + small ▾.
 class QualityButton : public juce::Button
 {
@@ -138,7 +146,7 @@ private:
     // a closed editor or a deleted instance is never touched.
     void showNotesMenu();
     void createNotesDoc();
-    void maybeAutoCreateNotes();      // Create Public Link with no doc attached yet
+    void maybeAutoCreateNotes();      // toggle on + sharing + signed in, no doc yet
     void promptForDocLink();
     void attachPastedDoc(const juce::String& text);
     void attachDoc(const NotesDoc& d);
@@ -155,11 +163,15 @@ private:
     StyledButton notesConnectButton { "Connect Google Docs", StyledButton::Style::accentBtn };
     StyledButton notesOpenButton    { "Open", StyledButton::Style::normal };
     StyledButton notesMenuButton    { "Attach doc", StyledButton::Style::normal };
+    ToggleSwitch notesToggle;
     juce::Label publicUrlLabel;
     QualityPopup popup;
 
     float dispL = 0, dispR = 0, holdL = 0, holdR = 0;
     int tick = 0, copiedPublic = 0;
+    int linkRestored = 0;             // ticks left on the "short link is back" caption
+    bool wasFallback = false;
+    bool wantAutoDoc = false;         // create a doc once sharing + signed in (Create / toggle on)
     int notesTextRight = 526;         // where the notes-card text must stop (buttons start)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ListenLinkEditor)
