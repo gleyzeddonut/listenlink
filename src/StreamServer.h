@@ -85,6 +85,12 @@ private:
         double helloRate = 0.0;
         int helloMode = -1;
         bool wantsPcm = false;   // client asked for /ws?fmt=pcm (no browser Opus support)
+        // /ws?ctl=1: a listener page that hasn't pressed play yet. Gets only
+        // the notes link (on connect, on change, and every 30 s as a
+        // keepalive so Cloudflare doesn't drop the idle socket) - no audio,
+        // no hello, and it isn't counted as a listener.
+        bool control = false;
+        uint32_t lastNotesSent = 0;  // ms tick; 0 = not sent yet
         bool dead = false;
     };
 

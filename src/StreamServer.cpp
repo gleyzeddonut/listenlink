@@ -84,7 +84,8 @@ void StreamServer::stopServer()
 int StreamServer::getNumListeners() const
 {
     const juce::ScopedLock sl(clientsLock);
-    return (int) clients.size();
+    return (int) std::count_if(clients.begin(), clients.end(),
+                               [](const std::unique_ptr<Client>& c) { return ! c->control; });
 }
 
 void StreamServer::pushAudio(const float* data, int numFrames)
@@ -179,6 +180,7 @@ void StreamServer::handleConnection(std::unique_ptr<juce::StreamingSocket> sock)
         auto client = std::make_unique<Client>();
         client->sock = std::move(sock);
         client->wantsPcm = target.contains("fmt=pcm");
+        client->control = target.contains("ctl=1");
         // helloRate/helloMode stay unset; the broadcast loop sends the hello
         // (with the right codec for this client) on its next tick.
 
@@ -269,6 +271,7 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
             const juce::ScopedLock sl(clientsLock);
             for (auto& c : clients)
             {
+                if (c->control) continue;
                 if (c->wantsPcm) needPcm = true;
                 else if (mode != 0) needOpus = true;
             }
@@ -301,8 +304,21 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
         }
 
         const juce::ScopedLock sl(clientsLock);
+        const auto now = juce::Time::getMillisecondCounter();
         for (auto& c : clients)
         {
+            if (c->control)
+            {
+                if (! notesFrame.empty() || c->lastNotesSent == 0 || now - c->lastNotesSent >= 30000)
+                {
+                    const auto f = notesFrame.empty() ? buildNotesFrame() : notesFrame;
+                    c->outbuf.insert(c->outbuf.end(), f.begin(), f.end());
+                    c->lastNotesSent = juce::jmax((uint32_t) 1, now);
+                }
+                serviceClient(*c);
+                continue;
+            }
+
             if (! notesFrame.empty())
                 c->outbuf.insert(c->outbuf.end(), notesFrame.begin(), notesFrame.end());
 
@@ -341,14 +357,16 @@ void StreamServer::broadcastLoop(juce::Thread& thread)
                       clients.end());
 
         // Tell everyone how many listeners there are whenever the count changes.
-        const int count = (int) clients.size();
+        const int count = (int) std::count_if(clients.begin(), clients.end(),
+                                              [](const std::unique_ptr<Client>& c) { return ! c->control; });
         if (count != lastListenerCount)
         {
             lastListenerCount = count;
             const auto json = "{\"listeners\":" + juce::String(count) + "}";
             const auto countFrame = buildWsFrame(0x01, json.toRawUTF8(), json.getNumBytesAsUTF8());
             for (auto& c : clients)
-                c->outbuf.insert(c->outbuf.end(), countFrame.begin(), countFrame.end());
+                if (! c->control)
+                    c->outbuf.insert(c->outbuf.end(), countFrame.begin(), countFrame.end());
         }
     }
 }
