@@ -77,6 +77,9 @@ public:
             status = "Starting tunnel...";
             active.store(true);
         }
+        fallback.store(false);
+        regFails.store(0);
+        regRetryAt.store(0);
         needsRegister.store(true);
         warmUp(localPort);
     }
@@ -92,6 +95,8 @@ public:
         {
             const juce::ScopedLock sl(lock);
             active.store(false);
+            fallback.store(false);
+            regRetryAt.store(0);
             wasRegistered = registered.exchange(false);
             id = identity.id;
             tok = identity.token;
@@ -134,6 +139,9 @@ public:
 
     bool isSharing() const    { return active.load(); }
     bool isRegistered() const { return registered.load(); }
+    // Sharing the raw tunnel URL because the short-link service didn't take
+    // the registration; the tunnel thread keeps retrying in the background.
+    bool isFallback() const   { return fallback.load(); }
 
     juce::String getPublicUrl() const  { const juce::ScopedLock sl(lock); return publicUrl; }
     juce::String getStatus() const     { const juce::ScopedLock sl(lock); return status; }
@@ -388,9 +396,16 @@ private:
                 // after registration in every trial. Warm tunnels (pre-warmed
                 // when the editor opened) are past the hold already, so the
                 // instant path is unchanged for them.
+                //
+                // A failed registration (link service down) falls back to the
+                // raw URL and retries here with backoff until it lands.
+                const auto now = juce::Time::getMillisecondCounter();
                 const bool tunnelSettled = urlFound.load()
-                    && juce::Time::getMillisecondCounter() - urlFoundAt.load() >= kFreshTunnelHoldMs;
-                if (tunnelSettled && active.load() && needsRegister.exchange(false))
+                    && now - urlFoundAt.load() >= kFreshTunnelHoldMs;
+                const auto retryAt = regRetryAt.load();
+                const bool retryDue = retryAt != 0 && ! registered.load()
+                    && (int32_t) (now - retryAt) >= 0;
+                if (tunnelSettled && active.load() && (needsRegister.exchange(false) || retryDue))
                 {
                     juce::String u;
                     {
@@ -434,10 +449,23 @@ private:
             if (active.load())
             {
                 registered.store(useShortLink);
+                fallback.store(! useShortLink);
                 publicUrl = useShortLink
                     ? juce::String(kLinkService) + "/" + id
                     : url;   // link service unreachable: raw URL is the only working link
                 status = "Public link active";
+                if (useShortLink)
+                {
+                    regFails.store(0);
+                    regRetryAt.store(0);
+                }
+                else
+                {
+                    // 5 s, 10 s, 20 s, 40 s, then every 60 s.
+                    const int n = juce::jmin(regFails.fetch_add(1), 4);
+                    const uint32_t delay = (uint32_t) juce::jmin(5000 << n, 60000);
+                    regRetryAt.store(juce::jmax((uint32_t) 1, juce::Time::getMillisecondCounter() + delay));
+                }
                 return;
             }
         }
@@ -461,7 +489,19 @@ private:
                 "-d", "{\"id\":\"" + id + "\",\"token\":\"" + tok
                       + "\",\"url\":\"" + url + "\"}" }))
             return false;
-        return curl.waitForProcessToFinish(20000) && curl.getExitCode() == 0;
+        // Poll rather than block: stopTunnel() gives this thread 3 s before
+        // force-killing it, and with retries a slow link service is no longer
+        // a one-off. Bail out (and kill curl) as soon as we're told to exit.
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            if (! curl.isRunning())
+                return curl.getExitCode() == 0;
+            if (juce::Thread::currentThreadShouldExit())
+                break;
+            juce::Thread::sleep(50);
+        }
+        curl.kill();
+        return false;
     }
 
     static void unregisterBlocking(const juce::String& id, const juce::String& tok)
@@ -483,6 +523,9 @@ private:
 
     StreamIdentity identity;
     std::atomic<bool> registered { false };
+    std::atomic<bool> fallback { false };         // showing the raw URL; registration being retried
+    std::atomic<int> regFails { 0 };              // consecutive failed registrations (retry backoff)
+    std::atomic<uint32_t> regRetryAt { 0 };       // ms tick of the next retry; 0 = none pending
     std::atomic<bool> active { false };           // user wants the link shared
     std::atomic<bool> needsRegister { false };    // tunnel thread owes a registration
     std::atomic<bool> needsUnregister { false };  // tunnel thread owes an unregistration
@@ -595,6 +638,8 @@ public:
         out.writeString(d.id);
         out.writeString(d.name);
         out.writeString(d.url);
+        // Doc toggle (0.9.1+).
+        out.writeBool(notesEnabled.load());
     }
 
     void setStateInformation(const void* data, int sizeInBytes) override
@@ -619,10 +664,21 @@ public:
             // attached); present-but-empty in newer saves means "none".
             const bool hasDocFields = in.getPosition() < in.getTotalLength();
             NotesDoc d { in.readString(), in.readString(), in.readString(), {} };
-            if (d.isValid() && d.url.startsWith("https://docs.google.com/document/d/"))
+            const bool docOk = d.isValid() && d.url.startsWith("https://docs.google.com/document/d/");
+
+            // Doc toggle: absent before 0.9.1. A 0.9.0 project that already
+            // had a doc attached keeps sharing it; everything else starts off.
+            if (in.getPosition() < in.getTotalLength())
+                notesEnabled.store(in.readBool());
+            else if (hasDocFields)
+                notesEnabled.store(docOk);
+
+            if (docOk)
                 setNotesDoc(d);
             else if (hasDocFields)
                 setNotesDoc({});
+            else
+                setNotesDoc(getNotesDoc());   // re-apply the toggle to the page
         }
     }
 
@@ -641,7 +697,17 @@ public:
             const juce::ScopedLock sl(notesLock);
             notesDoc = d;
         }
-        server.setNotesUrl(d.url);
+        server.setNotesUrl(notesEnabled.load() ? d.url : juce::String());
+    }
+
+    // "Session doc" toggle, off by default. Off: no doc is auto-created and
+    // listeners see no doc button. The attachment itself is kept, so turning
+    // it back on shows the same doc again (pushed live to open pages).
+    bool isNotesEnabled() const { return notesEnabled.load(); }
+    void setNotesEnabled(bool on)
+    {
+        notesEnabled.store(on);
+        setNotesDoc(getNotesDoc());
     }
 
     StreamServer server;
@@ -661,6 +727,7 @@ private:
 
     mutable juce::CriticalSection notesLock;
     NotesDoc notesDoc;
+    std::atomic<bool> notesEnabled { false };
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (ListenLinkProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ListenLinkProcessor)

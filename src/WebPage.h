@@ -78,6 +78,19 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
   .sq { width:15px; height:15px; border-radius:2px; background:currentColor;
         display:block; }
 
+  /* ---- volume ---- */
+  .vol { display:flex; align-items:center; gap:12px; width:min(240px, 100%); }
+  .vol svg { flex:none; color:#6a6a76; cursor:pointer; }
+  .vol .vpct { font-size:10px; color:#6a6a76; width:30px; text-align:right; flex:none; }
+  #vol { -webkit-appearance:none; appearance:none; flex:1; height:4px; border-radius:2px;
+         outline:none; cursor:pointer; --v:100%;
+         background:linear-gradient(to right, #4f6bff var(--v), #20202a var(--v)); }
+  #vol::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:14px; height:14px;
+         border-radius:50%; background:#e8e8ec; border:none; box-shadow:0 1px 4px rgba(0,0,0,.5); }
+  #vol::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:#e8e8ec;
+         border:none; box-shadow:0 1px 4px rgba(0,0,0,.5); }
+  #vol:focus-visible { box-shadow:0 0 0 3px rgba(79,107,255,.35); }
+
   /* ---- divider + meters ---- */
   .divider { height:1px; background:#20202a; margin:30px -34px 0; }
   .meters { padding-top:22px; }
@@ -138,6 +151,15 @@ static const char* const kListenerPage = R"HTMLPAGE(<!doctype html>
         <p class="sub" id="subline">Press play to join the session. Nothing to install.</p>
       </div>
       <button id="btn" aria-label="Start listening"><span id="icon" class="tri"></span></button>
+      <div class="vol">
+        <svg id="volIcon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 6h2.5L8 3v10L4.5 10H2z" fill="currentColor"/>
+          <path id="volWave" d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6.3 6.3 0 0 1 0 9"/>
+        </svg>
+        <input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="Volume">
+        <span class="vpct mono" id="volPct">100</span>
+      </div>
     </div>
     <div class="divider"></div>
     <div class="meters">
@@ -177,6 +199,9 @@ const warn = document.getElementById('warn');
 const foot = document.getElementById('foot');
 const notes = document.getElementById('notes');
 const notesLink = document.getElementById('notesLink');
+const volEl = document.getElementById('vol');
+const volPct = document.getElementById('volPct');
+const volWave = document.getElementById('volWave');
 
 // The sender can attach a Google Doc as session notes. The plugin bakes the
 // current link into this page when it serves it (so the button is there
@@ -209,6 +234,29 @@ let dispL = 0, dispR = 0;
 let lastBufMs = 0, lastUnderruns = 0, lastUnderrunAt = 0, bufferSeen = false;
 let disconnected = false;
 let mediaDest = null, reconnectTimer = 0;
+
+// Listener-side volume, 0..100 on the slider, squared for a perceptual taper
+// (never above unity - no clipping). Remembered per browser. Separate from
+// mute so unmuting returns to the chosen level.
+let volume = 100;
+try { const v = parseInt(localStorage.getItem('ll-volume'), 10); if (v >= 0 && v <= 100) volume = v; } catch(_){}
+function targetGain() { return muted ? 0 : (volume / 100) * (volume / 100); }
+function applyGain() { if (gain) gain.gain.setTargetAtTime(targetGain(), ctx.currentTime, 0.015); }
+function renderVol() {
+  volEl.value = volume;
+  volEl.style.setProperty('--v', volume + '%');
+  volPct.textContent = volume;
+  volWave.style.display = (volume === 0 || muted) ? 'none' : '';
+}
+volEl.addEventListener('input', () => {
+  volume = parseInt(volEl.value, 10) || 0;
+  try { localStorage.setItem('ll-volume', String(volume)); } catch(_){}
+  if (muted && volume > 0) { setMuted(false); return; }   // dragging up unmutes
+  applyGain();
+  renderVol();
+});
+document.getElementById('volIcon').addEventListener('click', () => { if (running) setMuted(!muted); });
+renderVol();
 
 // Playback goes through a hidden <audio> element (fed by a MediaStream
 // destination) instead of straight to ctx.destination: iOS only keeps audio
@@ -435,7 +483,7 @@ async function initAudio() {
     renderWarn();
   };
   gain = ctx.createGain();
-  gain.gain.value = muted ? 0 : 1;
+  gain.gain.value = targetGain();
   node.connect(gain);
   try {
     mediaDest = ctx.createMediaStreamDestination();
@@ -564,7 +612,8 @@ function connect() {
 
 function setMuted(m) {
   muted = m;
-  if (gain) gain.gain.setTargetAtTime(m ? 0 : 1, ctx.currentTime, 0.015);
+  applyGain();
+  renderVol();
   renderUI();
 }
 
