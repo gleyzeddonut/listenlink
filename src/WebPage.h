@@ -610,6 +610,35 @@ function connect() {
   ws.onerror = () => { try { ws.close(); } catch(_){} };
 }
 
+// Before play there is no audio socket, so a doc attached (or detached)
+// mid-session would only show after a reload. A control-only socket
+// (?ctl=1: notes link, no audio, not counted as a listener) covers that gap
+// until the listener presses play.
+let ctlWs = null, ctlFails = 0, ctlTimer = 0;
+function connectCtl() {
+  if (running || ctlWs) return;
+  const s = new WebSocket((wsSecure ? 'wss://' : 'ws://') + wsHost + wsPath + '?ctl=1');
+  ctlWs = s;
+  s.onopen = () => { ctlFails = 0; };
+  s.onmessage = (e) => {
+    if (typeof e.data !== 'string') return;
+    try { const m = JSON.parse(e.data); if (m.notes !== undefined) setNotes(m.notes); } catch(_){}
+  };
+  s.onclose = () => {
+    if (ctlWs !== s) return;
+    ctlWs = null;
+    if (running) return;
+    ctlFails++;
+    clearTimeout(ctlTimer);
+    ctlTimer = setTimeout(connectCtl, Math.min(60000, 3000 * Math.pow(2, ctlFails - 1)));
+  };
+  s.onerror = () => { try { s.close(); } catch(_){} };
+}
+function stopCtl() {
+  clearTimeout(ctlTimer);
+  if (ctlWs) { const s = ctlWs; ctlWs = null; s.onclose = null; try { s.close(); } catch(_){} }
+}
+
 function setMuted(m) {
   muted = m;
   applyGain();
@@ -618,6 +647,7 @@ function setMuted(m) {
 }
 
 function start() {
+  stopCtl();
   running = true;
   disconnected = false;
   audioEl.loop = true;
@@ -629,6 +659,7 @@ function start() {
 
 // Not reachable from the UI; teardown for pagehide only.
 function stop() {
+  stopCtl();
   running = false; live = false;
   clearTimeout(reconnectTimer);
   if (ws) { ws.onclose = null; try { ws.close(); } catch(_){} ws = null; }
@@ -640,11 +671,15 @@ function stop() {
 
 btn.addEventListener('click', () => { running ? setMuted(!muted) : start(); });
 window.addEventListener('pagehide', stop);
+// Back/forward cache: pagehide closed the control socket; reopen it.
+window.addEventListener('pageshow', (e) => { if (e.persisted && !running) { ctlFails = 0; connectCtl(); } });
+connectCtl();
 
 // Coming back from a locked screen or background tab: the context may be
 // suspended and reconnect timers throttled - kick both immediately.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !running) return;
+  if (document.visibilityState !== 'visible') return;
+  if (!running) { if (!ctlWs) { ctlFails = 0; clearTimeout(ctlTimer); connectCtl(); } return; }
   resumeOutput();
   if (!ws || ws.readyState > WebSocket.OPEN) {
     clearTimeout(reconnectTimer);
